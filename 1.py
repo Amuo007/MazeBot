@@ -1,19 +1,18 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+from matplotlib.patches import Rectangle
 from dataclasses import dataclass
-
-from agent import MazeAgent
 
 # ============================================================
 # CONFIG
 # ============================================================
-IMAGE_PATH = "maze_5.png"
-FIRE_PHASE_IMAGES = ["maze_5.png", "2.png", "3.png", "4.png"]
+IMAGE_PATH = "maze_5.png"   # <- change to your PNG filename
 SHOW_DEBUG = True
+LIVE_REFRESH_MS = 200
 MAZE_SIZE = 64
-FRAME_MS = 90
+
+# color tolerance: increase if your painted colors vary a bit
 COLOR_TOL = 45
 
 # ============================================================
@@ -41,6 +40,7 @@ NAME_TO_CHAR = {
     UNKNOWN: "?"
 }
 
+# exact RGB colors from your painted version
 TARGET_COLORS = {
     FIRE:       (255, 145, 76),   # #ff914c
     CONFUSION:  (255, 222, 89),   # #ffde59
@@ -50,22 +50,6 @@ TARGET_COLORS = {
     START:      (15, 192, 223),   # #0fc0df
     GOAL:       (0, 74, 173),     # #004aad
 }
-
-DISPLAY_COLORS = {
-    EMPTY:      np.array([1.00, 1.00, 1.00]),
-    FIRE:       np.array([255, 145, 76]) / 255.0,
-    CONFUSION:  np.array([255, 222, 89]) / 255.0,
-    TP_PURPLE:  np.array([140, 82, 255]) / 255.0,
-    TP_RED:     np.array([255, 49, 50]) / 255.0,
-    TP_GREEN:   np.array([1, 191, 99]) / 255.0,
-    START:      np.array([15, 192, 223]) / 255.0,
-    GOAL:       np.array([0, 74, 173]) / 255.0,
-    UNKNOWN:    np.array([0.75, 0.75, 0.75]),
-}
-
-COL_AGENT   = np.array([1.00, 0.15, 0.15])
-COL_VISITED = np.array([0.60, 0.82, 1.00])
-COL_PATH    = np.array([1.00, 0.95, 0.55])
 
 # ============================================================
 # DATA STRUCTURES
@@ -84,7 +68,7 @@ class Icon:
     rgb_mean: tuple
 
 # ============================================================
-# HELPERS
+# IMAGE HELPERS
 # ============================================================
 def load_image(path):
     img_bgr = cv2.imread(path, cv2.IMREAD_COLOR)
@@ -159,6 +143,9 @@ def build_wall_matrices(gray, step, n=64):
 
     return vertical_walls, horizontal_walls
 
+# ============================================================
+# COLOR MATCHING
+# ============================================================
 def color_distance(c1, c2):
     c1 = np.array(c1, dtype=np.float32)
     c2 = np.array(c2, dtype=np.float32)
@@ -178,11 +165,18 @@ def classify_icon(rgb_mean):
         return best_kind
     return UNKNOWN
 
+# ============================================================
+# ICON DETECTION
+# ============================================================
 def detect_colored_icons(img_rgb, step):
+    """
+    Detect colored painted blobs and classify them by nearest known RGB.
+    """
     maxc = img_rgb.max(axis=2)
     minc = img_rgb.min(axis=2)
     sat = maxc - minc
 
+    # detect colorful things, ignore white background and black walls
     color_mask = ((sat > 40) & (maxc > 60)).astype(np.uint8)
 
     kernel = np.ones((3, 3), np.uint8)
@@ -207,8 +201,10 @@ def detect_colored_icons(img_rgb, step):
         rgb_mean = tuple(np.mean(patch_rgb, axis=0))
 
         cx, cy = centroids[i]
+
         col = int(np.clip(round((cx - step / 2) / step), 0, MAZE_SIZE - 1))
         row = int(np.clip(round((cy - step / 2) / step), 0, MAZE_SIZE - 1))
+
         kind = classify_icon(rgb_mean)
 
         icons.append(
@@ -228,6 +224,9 @@ def detect_colored_icons(img_rgb, step):
 
     return icons, color_mask
 
+# ============================================================
+# MAZE MATRIX BUILD
+# ============================================================
 def build_object_matrix(icons, n=64):
     obj = np.zeros((n, n), dtype=np.int32)
     for icon in icons:
@@ -237,70 +236,23 @@ def build_object_matrix(icons, n=64):
 def print_symbol_matrix(obj):
     lines = []
     for r in range(obj.shape[0]):
-        lines.append("".join(NAME_TO_CHAR.get(v, "?") for v in obj[r]))
+        line = "".join(NAME_TO_CHAR.get(v, "?") for v in obj[r])
+        lines.append(line)
     return "\n".join(lines)
 
-def find_single_cell(obj_matrix, target_value, name):
-    cells = list(zip(*np.where(obj_matrix == target_value)))
-    if len(cells) != 1:
-        raise ValueError(f"Expected exactly 1 {name}, found {len(cells)}")
-    return cells[0]
-
-def build_teleport_pairs(obj_matrix):
-    teleport_pairs = {}
-    for tp_kind in [TP_PURPLE, TP_RED, TP_GREEN]:
-        cells = list(zip(*np.where(obj_matrix == tp_kind)))
-        cells = sorted(cells)
-
-        if len(cells) < 2:
-            continue
-        if len(cells) == 2:
-            a, b = cells
-            teleport_pairs[a] = b
-            teleport_pairs[b] = a
-        else:
-            for i in range(len(cells)):
-                teleport_pairs[cells[i]] = cells[(i + 1) % len(cells)]
-    return teleport_pairs
-
-def extract_fire_cells_from_image(path, step):
-    img_rgb = load_image(path)
-    icons, _ = detect_colored_icons(img_rgb, step)
-    obj = build_object_matrix(icons, n=MAZE_SIZE)
-    return set(zip(*np.where(obj == FIRE)))
-
-def build_display(obj_matrix, agent, start, goal, fire_phase_sets):
+# ============================================================
+# LIVE MATPLOTLIB VIEW
+# ============================================================
+def draw_live_map(vertical_walls, horizontal_walls, obj_matrix, icons, step):
     n = obj_matrix.shape[0]
-    disp = np.ones((n, n, 3), dtype=float)
 
-    for r in range(n):
-        for c in range(n):
-            tile = obj_matrix[r, c]
-            if tile != EMPTY and tile != FIRE:
-                disp[r, c] = DISPLAY_COLORS.get(tile, DISPLAY_COLORS[UNKNOWN])
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_facecolor("white")
+    ax.set_xlim(0, n)
+    ax.set_ylim(n, 0)
+    ax.set_aspect("equal")
+    ax.set_title("Maze matrix live view")
 
-    active_fire = agent.get_active_fire_cells()
-    for r, c in active_fire:
-        disp[r, c] = DISPLAY_COLORS[FIRE]
-
-    for cell in agent.get_remaining_path()[1:]:
-        r, c = cell
-        disp[r, c] = disp[r, c] * 0.45 + COL_PATH * 0.55
-
-    for cell in agent.visited[:-1]:
-        r, c = cell
-        disp[r, c] = disp[r, c] * 0.35 + COL_VISITED * 0.65
-
-    sr, sc = start
-    gr, gc = goal
-    disp[sr, sc] = DISPLAY_COLORS[START]
-    disp[gr, gc] = DISPLAY_COLORS[GOAL]
-
-    ar, ac = agent.position
-    disp[ar, ac] = COL_AGENT
-    return disp
-
-def draw_static_walls(ax, vertical_walls, horizontal_walls, n):
     for r in range(n):
         for c in range(n + 1):
             if vertical_walls[r, c]:
@@ -311,19 +263,36 @@ def draw_static_walls(ax, vertical_walls, horizontal_walls, n):
             if horizontal_walls[r, c]:
                 ax.plot([c, c + 1], [r, r], color="black", linewidth=1)
 
-def draw_marker_labels(ax, obj_matrix):
-    n = obj_matrix.shape[0]
-    for r in range(n):
-        for c in range(n):
-            tile = obj_matrix[r, c]
-            if tile != EMPTY and tile != FIRE:
-                ax.text(c + 0.5, r + 0.56, NAME_TO_CHAR.get(tile, "?"),
-                        ha="center", va="center", fontsize=7)
+    for icon in icons:
+        rr, cc = icon.row, icon.col
+        label = NAME_TO_CHAR.get(icon.kind, "?")
+
+        ax.add_patch(
+            Rectangle(
+                (cc + 0.15, rr + 0.15),
+                0.7,
+                0.7,
+                fill=False,
+                edgecolor="red",
+                linewidth=1,
+            )
+        )
+        ax.text(cc + 0.5, rr + 0.55, label, ha="center", va="center", fontsize=8)
+
+    plt.tight_layout()
+    plt.pause(LIVE_REFRESH_MS / 1000.0)
+    plt.show()
 
 def show_debug_detection(img_rgb, icons):
     dbg = img_rgb.copy()
     for icon in icons:
-        cv2.rectangle(dbg, (icon.x, icon.y), (icon.x + icon.w, icon.y + icon.h), (255, 0, 0), 1)
+        cv2.rectangle(
+            dbg,
+            (icon.x, icon.y),
+            (icon.x + icon.w, icon.y + icon.h),
+            (255, 0, 0),
+            1,
+        )
         cv2.putText(
             dbg,
             NAME_TO_CHAR.get(icon.kind, "?"),
@@ -344,8 +313,7 @@ def show_debug_detection(img_rgb, icons):
 # ============================================================
 # MAIN
 # ============================================================
-if __name__ == "__main__":
-    print("Loading maze...")
+def main():
     img_rgb = load_image(IMAGE_PATH)
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
 
@@ -356,8 +324,6 @@ if __name__ == "__main__":
 
     icons, color_mask = detect_colored_icons(img_rgb, step)
     obj_matrix = build_object_matrix(icons, n=MAZE_SIZE)
-
-    fire_phase_sets = [extract_fire_cells_from_image(p, step) for p in FIRE_PHASE_IMAGES]
 
     print("\nDetected icons:")
     for i, icon in enumerate(icons):
@@ -371,114 +337,10 @@ if __name__ == "__main__":
     print("\nObject matrix as characters:")
     print(print_symbol_matrix(obj_matrix))
 
-    start = find_single_cell(obj_matrix, START, "start")
-    goal = find_single_cell(obj_matrix, GOAL, "goal")
-    teleport_pairs = build_teleport_pairs(obj_matrix)
-
-    print(f"\nStart: {start}")
-    print(f"Goal : {goal}")
-
-    print("\nTeleport pairs:")
-    if teleport_pairs:
-        shown = set()
-        for a, b in teleport_pairs.items():
-            if (b, a) not in shown:
-                print(f"  {a} <-> {b}")
-                shown.add((a, b))
-    else:
-        print("  none")
-
-    print("\nFire phase counts:")
-    for i, s in enumerate(fire_phase_sets):
-        print(f"  phase {i}: {len(s)} cells")
-
     if SHOW_DEBUG:
         show_debug_detection(img_rgb, icons)
 
-    agent = MazeAgent(
-        start=start,
-        goal=goal,
-        vertical_walls=vertical_walls,
-        horizontal_walls=horizontal_walls,
-        obj_matrix=obj_matrix,
-        teleport_pairs=teleport_pairs,
-        fire_phase_sets=fire_phase_sets,
-    )
+    draw_live_map(vertical_walls, horizontal_walls, obj_matrix, icons, step)
 
-    ok = agent.find_initial_path()
-    if not ok:
-        print("No path found from start to goal.")
-        raise SystemExit
-
-    print(f"\nInitial A* path length: {len(agent.path)}")
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.set_xlim(0, MAZE_SIZE)
-    ax.set_ylim(MAZE_SIZE, 0)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    im = ax.imshow(
-        build_display(obj_matrix, agent, start, goal, fire_phase_sets),
-        extent=(0, MAZE_SIZE, MAZE_SIZE, 0),
-        interpolation="nearest"
-    )
-
-    draw_static_walls(ax, vertical_walls, horizontal_walls, MAZE_SIZE)
-    draw_marker_labels(ax, obj_matrix)
-
-    title = ax.set_title("Step 0 | Fire: 0°", fontsize=10)
-
-    ani_holder = {"ani": None}
-
-    def update(_frame):
-        event = agent.step()
-        im.set_data(build_display(obj_matrix, agent, start, goal, fire_phase_sets))
-
-        phase = (agent.total_steps // 5) % 4
-        phase_text = {0: "0°", 1: "90°", 2: "180°", 3: "270°"}[phase]
-
-        if event == "goal":
-            title.set_text(f"GOAL REACHED | Steps: {agent.total_steps} | Fire: {phase_text}")
-            title.set_color("green")
-            if ani_holder["ani"] is not None:
-                ani_holder["ani"].event_source.stop()
-
-        elif event == "dead":
-            title.set_text(f"DEAD | Steps: {agent.total_steps} | Fire: {phase_text}")
-            title.set_color("red")
-            if ani_holder["ani"] is not None:
-                ani_holder["ani"].event_source.stop()
-
-        elif event == "teleport":
-            title.set_text(f"TELEPORT | Steps: {agent.total_steps} | Fire: {phase_text} | Replans: {agent.replans}")
-            title.set_color("purple")
-
-        else:
-            title.set_text(f"Step {agent.total_steps} | Fire: {phase_text} | Replans: {agent.replans}")
-            title.set_color("black")
-
-        return [im, title]
-
-    ani_holder["ani"] = animation.FuncAnimation(
-        fig,
-        update,
-        frames=5000,
-        interval=FRAME_MS,
-        blit=False,
-        repeat=False
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-    print("\n" + "=" * 50)
-    print("FINAL SUMMARY")
-    print("=" * 50)
-    print(f"Start       : {start}")
-    print(f"Goal        : {goal}")
-    print(f"Steps       : {agent.total_steps}")
-    print(f"Replans     : {agent.replans}")
-    print(f"Reached goal: {agent.done}")
-    print(f"Dead        : {agent.dead}")
-    print("=" * 50)
+if __name__ == "__main__":
+    main()
