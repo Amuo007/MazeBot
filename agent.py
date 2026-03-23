@@ -37,12 +37,14 @@ class MazeAgent:
         self.path = []
         self.path_index = 0
         self.visited = [start]
+        self.visited_mask = None
 
         self.confused_turns_remaining = 0
         self.confusion_count = 0
         self.confusion_locations = []
         self.death_count = 0
         self.known_pits = set()
+        self.known_pit_phases = {}
         self.pending_respawn = False
 
         self.total_steps = 0
@@ -63,13 +65,26 @@ class MazeAgent:
         return 0 <= r < self.rows and 0 <= c < self.cols
 
     def get_active_fire_cells(self):
-        phase = (self.total_steps // 5) % 4
+        phase = (self.total_steps // 5) % len(self.fire_phase_sets)
         return self.fire_phase_sets[phase]
 
+    def get_fire_cells_for_step(self, step_count):
+        phase = (step_count // 5) % len(self.fire_phase_sets)
+        return self.fire_phase_sets[phase]
+
+    def is_fire_at_step(self, cell, step_count):
+        return cell in self.get_fire_cells_for_step(step_count)
+
     def is_blocked_cell(self, cell):
+        return False
+
+    def is_phase_blocked_cell(self, cell, step_count):
         if cell == self.start:
             return False
-        return cell in self.known_pits
+
+        phase = (step_count // 5) % len(self.fire_phase_sets)
+        phases = self.known_pit_phases.get(cell)
+        return phases is not None and phase in phases
 
     def _activate_confusion(self, cell):
         self.confusion_count += 1
@@ -79,8 +94,29 @@ class MazeAgent:
     def _trigger_death(self, cell):
         self.death_count += 1
         self.known_pits.add(cell)
+        phase = (self.total_steps // 5) % len(self.fire_phase_sets)
+        self.known_pit_phases.setdefault(cell, set()).add(phase)
         self.dead = True
         self.pending_respawn = True
+
+    def _respawn_now(self):
+        self.position = self.start
+        self.dead = False
+        self.pending_respawn = False
+        self.confused_turns_remaining = 0
+
+        # If start is unsafe in this phase, keep a deferred respawn state.
+        if self.position in self.get_active_fire_cells():
+            self.dead = True
+            self.pending_respawn = True
+            return "dead"
+
+        ok = self.plan_from(self.position)
+        if ok:
+            return "respawn"
+
+        # No route at this phase; stay alive and try again on future turns.
+        return "wait"
 
     def _delta(self, a, b):
         return (b[0] - a[0], b[1] - a[1])
@@ -92,10 +128,10 @@ class MazeAgent:
         ar, ac = a
         br, bc = b
 
-        if not self.in_bounds(b):
-            return False
+        if a == b:
+            return True
 
-        if self.is_blocked_cell(b):
+        if not self.in_bounds(b):
             return False
 
         if br == ar - 1 and bc == ac:
@@ -120,46 +156,68 @@ class MazeAgent:
                 out.append(nb)
         return out
 
-    def astar(self, start, goal):
+    def time_neighbors(self, cell):
+        # Include waiting in place so the agent can let rotating hazards pass.
+        return [cell] + self.neighbors(cell)
+
+    def astar(self, start, goal, start_step):
+        period = 5 * len(self.fire_phase_sets)
         open_heap = []
-        heapq.heappush(open_heap, (0, start))
+        start_state = (start, start_step % period)
+        heapq.heappush(open_heap, (0, 0, start_state))
 
         came_from = {}
-        g_score = {start: 0}
+        g_score = {start_state: 0}
         closed = set()
 
         while open_heap:
-            _, current = heapq.heappop(open_heap)
+            _, _, state = heapq.heappop(open_heap)
+            current, t_mod = state
 
-            if current in closed:
+            if state in closed:
                 continue
-            closed.add(current)
+            closed.add(state)
 
             if current == goal:
                 path = [current]
-                while current in came_from:
-                    current = came_from[current]
-                    path.append(current)
+                cursor = state
+                while cursor in came_from:
+                    cursor = came_from[cursor]
+                    path.append(cursor[0])
                 path.reverse()
                 return path
 
-            for nb in self.neighbors(current):
-                tentative_g = g_score[current] + 1
-                if tentative_g < g_score.get(nb, float("inf")):
-                    came_from[nb] = current
-                    g_score[nb] = tentative_g
+            current_g = g_score[state]
+            for nb in self.time_neighbors(current):
+                next_step = start_step + current_g + 1
+
+                if self.is_phase_blocked_cell(nb, next_step):
+                    continue
+
+                next_state = (nb, (t_mod + 1) % period)
+                tentative_g = current_g + 1
+
+                if tentative_g < g_score.get(next_state, float("inf")):
+                    came_from[next_state] = state
+                    g_score[next_state] = tentative_g
                     f = tentative_g + self.heuristic(nb, goal)
-                    heapq.heappush(open_heap, (f, nb))
+                    heapq.heappush(open_heap, (f, tentative_g, next_state))
 
         return []
 
     def plan_from(self, pos):
-        self.path = self.astar(pos, self.goal)
+        self.path = self.astar(pos, self.goal, self.total_steps)
         self.path_index = 0
         return len(self.path) > 0
 
     def find_initial_path(self):
         return self.plan_from(self.start)
+
+    def mark_visited(self, cell):
+        if self.visited_mask is None:
+            return
+        r, c = cell
+        self.visited_mask[r, c] = True
 
     def get_remaining_path(self):
         if not self.path:
@@ -171,20 +229,7 @@ class MazeAgent:
             return "stuck"
 
         if self.pending_respawn:
-            self.position = self.start
-            self.dead = False
-            self.pending_respawn = False
-            self.confused_turns_remaining = 0
-
-            if self.position != self.visited[-1]:
-                self.visited.append(self.position)
-
-            ok = self.plan_from(self.position)
-            if not ok:
-                self.failed = True
-                return "stuck"
-
-            return "respawn"
+            return self._respawn_now()
 
         if self.dead:
             return "dead"
@@ -193,8 +238,14 @@ class MazeAgent:
             return "goal"
 
         if not self.path:
-            self.failed = True
-            return "stuck"
+            ok = self.plan_from(self.position)
+            if not ok:
+                # Dynamic hazards may unblock later; wait in place and try again next turn.
+                self.total_steps += 1
+                if self.position in self.get_active_fire_cells():
+                    self._trigger_death(self.position)
+                    return "dead"
+                return "wait"
 
         if self.position == self.goal:
             self.done = True
@@ -226,14 +277,22 @@ class MazeAgent:
 
         actual_next = self._apply_delta(self.position, actual_delta)
         if not self.can_move(self.position, actual_next):
-            self.failed = True
-            return "stuck"
+            ok = self.plan_from(self.position)
+            if not ok:
+                self.total_steps += 1
+                if self.position in self.get_active_fire_cells():
+                    self._trigger_death(self.position)
+                    return "dead"
+                return "wait"
+            return "move"
 
         self.path_index += 1
         self.position = actual_next
 
         if self.position != self.visited[-1]:
             self.visited.append(self.position)
+        self.mark_visited(self.position)
+        self.mark_visited(self.position)
         self.total_steps += 1
 
         if self.position in self.get_active_fire_cells():
@@ -253,6 +312,7 @@ class MazeAgent:
         if self.position in self.teleport_pairs:
             self.position = self.teleport_pairs[self.position]
             self.visited.append(self.position)
+            self.mark_visited(self.position)
             self.replans += 1
             event = "teleport"
 
@@ -271,8 +331,11 @@ class MazeAgent:
 
             ok = self.plan_from(self.position)
             if not ok:
-                self.failed = True
-                return "stuck"
+                self.total_steps += 1
+                if self.position in self.get_active_fire_cells():
+                    self._trigger_death(self.position)
+                    return "dead"
+                return "wait"
 
             return event
 

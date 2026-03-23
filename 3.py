@@ -9,11 +9,11 @@ from agent import MazeAgent
 # ============================================================
 # CONFIG
 # ============================================================
-IMAGE_PATH = "maze_5_edited.png"
-FIRE_SOURCE_IMAGE = "maze_5_edited.png"
+IMAGE_PATH = "maze_5.png"
+FIRE_SOURCE_IMAGE = "maze_5.png"
 SHOW_DEBUG = True
 MAZE_SIZE = 64
-FRAME_MS = 90
+FRAME_MS = 1
 COLOR_TOL = 45
 
 # ============================================================
@@ -379,9 +379,14 @@ def build_display(obj_matrix, agent, start, goal, fire_phase_sets):
         r, c = cell
         disp[r, c] = disp[r, c] * 0.45 + COL_PATH * 0.55
 
-    for cell in agent.visited[:-1]:
-        r, c = cell
-        disp[r, c] = disp[r, c] * 0.35 + COL_VISITED * 0.65
+    if getattr(agent, "visited_mask", None) is not None:
+        visited_rows, visited_cols = np.where(agent.visited_mask)
+        for r, c in zip(visited_rows, visited_cols):
+            disp[r, c] = disp[r, c] * 0.35 + COL_VISITED * 0.65
+    else:
+        for cell in agent.visited[:-1]:
+            r, c = cell
+            disp[r, c] = disp[r, c] * 0.35 + COL_VISITED * 0.65
 
     sr, sc = start
     gr, gc = goal
@@ -497,6 +502,8 @@ if __name__ == "__main__":
         teleport_pairs=teleport_pairs,
         fire_phase_sets=fire_phase_sets,
     )
+    agent.visited_mask = np.zeros((MAZE_SIZE, MAZE_SIZE), dtype=bool)
+    agent.mark_visited(start)
 
     ok = agent.find_initial_path()
     if not ok:
@@ -556,6 +563,12 @@ if __name__ == "__main__":
             title.set_color("dimgray")
             if ani_holder["ani"] is not None:
                 ani_holder["ani"].event_source.stop()
+
+        elif event == "wait":
+            title.set_text(
+                f"WAITING FOR FIRE PHASE | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count}"
+            )
+            title.set_color("saddlebrown")
 
         elif event == "teleport":
             title.set_text(f"TELEPORT | Steps: {agent.total_steps} | Fire: {phase_text} | Replans: {agent.replans}")
