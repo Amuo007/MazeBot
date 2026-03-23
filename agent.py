@@ -38,10 +38,22 @@ class MazeAgent:
         self.path_index = 0
         self.visited = [start]
 
+        self.confused_turns_remaining = 0
+        self.confusion_count = 0
+        self.confusion_locations = []
+        self.death_count = 0
+        self.known_pits = set()
+        self.pending_respawn = False
+
         self.total_steps = 0
         self.replans = 0
         self.dead = False
         self.done = False
+        self.failed = False
+
+    @property
+    def is_confused(self):
+        return self.confused_turns_remaining > 0
 
     def heuristic(self, a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -55,13 +67,35 @@ class MazeAgent:
         return self.fire_phase_sets[phase]
 
     def is_blocked_cell(self, cell):
-        return False
+        if cell == self.start:
+            return False
+        return cell in self.known_pits
+
+    def _activate_confusion(self, cell):
+        self.confusion_count += 1
+        self.confusion_locations.append(cell)
+        self.confused_turns_remaining = 2
+
+    def _trigger_death(self, cell):
+        self.death_count += 1
+        self.known_pits.add(cell)
+        self.dead = True
+        self.pending_respawn = True
+
+    def _delta(self, a, b):
+        return (b[0] - a[0], b[1] - a[1])
+
+    def _apply_delta(self, cell, delta):
+        return (cell[0] + delta[0], cell[1] + delta[1])
 
     def can_move(self, a, b):
         ar, ac = a
         br, bc = b
 
         if not self.in_bounds(b):
+            return False
+
+        if self.is_blocked_cell(b):
             return False
 
         if br == ar - 1 and bc == ac:
@@ -133,6 +167,25 @@ class MazeAgent:
         return self.path[self.path_index:]
 
     def step(self):
+        if self.failed:
+            return "stuck"
+
+        if self.pending_respawn:
+            self.position = self.start
+            self.dead = False
+            self.pending_respawn = False
+            self.confused_turns_remaining = 0
+
+            if self.position != self.visited[-1]:
+                self.visited.append(self.position)
+
+            ok = self.plan_from(self.position)
+            if not ok:
+                self.failed = True
+                return "stuck"
+
+            return "respawn"
+
         if self.dead:
             return "dead"
 
@@ -140,8 +193,8 @@ class MazeAgent:
             return "goal"
 
         if not self.path:
-            self.dead = True
-            return "dead"
+            self.failed = True
+            return "stuck"
 
         if self.position == self.goal:
             self.done = True
@@ -156,13 +209,35 @@ class MazeAgent:
                 return "goal"
             return "move"
 
+        intended_next = self.path[self.path_index + 1]
+        event = "move"
+
+        planned_delta = self._delta(self.position, intended_next)
+        command_delta = planned_delta
+
+        if self.is_confused:
+            # Confusion flips controls, so we issue the opposite command
+            # to track the original plan.
+            command_delta = (-planned_delta[0], -planned_delta[1])
+            actual_delta = (-command_delta[0], -command_delta[1])
+            self.confused_turns_remaining = max(0, self.confused_turns_remaining - 1)
+        else:
+            actual_delta = command_delta
+
+        actual_next = self._apply_delta(self.position, actual_delta)
+        if not self.can_move(self.position, actual_next):
+            self.failed = True
+            return "stuck"
+
         self.path_index += 1
-        self.position = self.path[self.path_index]
-        self.visited.append(self.position)
+        self.position = actual_next
+
+        if self.position != self.visited[-1]:
+            self.visited.append(self.position)
         self.total_steps += 1
 
         if self.position in self.get_active_fire_cells():
-            self.dead = True
+            self._trigger_death(self.position)
             return "dead"
 
         r, c = self.position
@@ -172,24 +247,33 @@ class MazeAgent:
             self.done = True
             return "goal"
 
+        if tile == CONFUSION:
+            self._activate_confusion(self.position)
+
         if self.position in self.teleport_pairs:
             self.position = self.teleport_pairs[self.position]
             self.visited.append(self.position)
             self.replans += 1
+            event = "teleport"
 
             if self.position in self.get_active_fire_cells():
-                self.dead = True
+                self._trigger_death(self.position)
                 return "dead"
+
+            tile = self.obj_matrix[self.position[0], self.position[1]]
 
             if self.position == self.goal:
                 self.done = True
                 return "goal"
 
+            if tile == CONFUSION:
+                self._activate_confusion(self.position)
+
             ok = self.plan_from(self.position)
             if not ok:
-                self.dead = True
-                return "dead"
+                self.failed = True
+                return "stuck"
 
-            return "teleport"
+            return event
 
-        return "move"
+        return event

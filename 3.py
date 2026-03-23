@@ -9,8 +9,8 @@ from agent import MazeAgent
 # ============================================================
 # CONFIG
 # ============================================================
-IMAGE_PATH = "maze_5.png"
-FIRE_PHASE_IMAGES = ["maze_5.png", "2.png", "3.png", "4.png"]
+IMAGE_PATH = "maze_5_edited.png"
+FIRE_SOURCE_IMAGE = "maze_5_edited.png"
 SHOW_DEBUG = True
 MAZE_SIZE = 64
 FRAME_MS = 90
@@ -269,6 +269,98 @@ def extract_fire_cells_from_image(path, step):
     obj = build_object_matrix(icons, n=MAZE_SIZE)
     return set(zip(*np.where(obj == FIRE)))
 
+
+def split_fire_components(cells):
+    cells = set(cells)
+    components = []
+    seen = set()
+
+    for start in cells:
+        if start in seen:
+            continue
+
+        stack = [start]
+        comp = set()
+        seen.add(start)
+
+        while stack:
+            r, c = stack.pop()
+            comp.add((r, c))
+
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nb = (r + dr, c + dc)
+                    if nb in cells and nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+
+        components.append(comp)
+
+    return components
+
+
+def find_fire_root(component):
+    comp = set(component)
+    candidates = []
+
+    for r, c in comp:
+        neighbors = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nb = (r + dr, c + dc)
+                if nb in comp:
+                    neighbors.append((dr, dc))
+
+        if len(neighbors) == 2:
+            v1, v2 = neighbors
+            # Root of the V has two branch vectors that are not exact opposites.
+            if not (v1[0] == -v2[0] and v1[1] == -v2[1]):
+                candidates.append((r, c))
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Fallback: choose cell nearest to component centroid.
+    cr = sum(r for r, _ in comp) / len(comp)
+    cc = sum(c for _, c in comp) / len(comp)
+    return min(comp, key=lambda p: (p[0] - cr) ** 2 + (p[1] - cc) ** 2)
+
+
+def rotate_point_about_root_90_clockwise(point, root):
+    pr, pc = point
+    rr, rc = root
+    dr = pr - rr
+    dc = pc - rc
+    return (rr + dc, rc - dr)
+
+
+def rotate_component_about_root(component, root, quarter_turns, n):
+    out = set(component)
+    turns = quarter_turns % 4
+
+    for _ in range(turns):
+        out = {rotate_point_about_root_90_clockwise(p, root) for p in out}
+
+    return {(r, c) for r, c in out if 0 <= r < n and 0 <= c < n}
+
+
+def build_rotating_fire_phase_sets(base_fire_cells, n):
+    components = split_fire_components(base_fire_cells)
+    roots = [find_fire_root(comp) for comp in components]
+
+    phases = []
+    for k in range(4):
+        phase_cells = set()
+        for comp, root in zip(components, roots):
+            phase_cells |= rotate_component_about_root(comp, root, k, n)
+        phases.append(phase_cells)
+
+    return phases
+
 def build_display(obj_matrix, agent, start, goal, fire_phase_sets):
     n = obj_matrix.shape[0]
     disp = np.ones((n, n, 3), dtype=float)
@@ -357,7 +449,8 @@ if __name__ == "__main__":
     icons, color_mask = detect_colored_icons(img_rgb, step)
     obj_matrix = build_object_matrix(icons, n=MAZE_SIZE)
 
-    fire_phase_sets = [extract_fire_cells_from_image(p, step) for p in FIRE_PHASE_IMAGES]
+    base_fire_cells = extract_fire_cells_from_image(FIRE_SOURCE_IMAGE, step)
+    fire_phase_sets = build_rotating_fire_phase_sets(base_fire_cells, MAZE_SIZE)
 
     print("\nDetected icons:")
     for i, icon in enumerate(icons):
@@ -445,8 +538,22 @@ if __name__ == "__main__":
                 ani_holder["ani"].event_source.stop()
 
         elif event == "dead":
-            title.set_text(f"DEAD | Steps: {agent.total_steps} | Fire: {phase_text}")
+            title.set_text(
+                f"DEAD -> RESPAWN NEXT | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count}"
+            )
             title.set_color("red")
+
+        elif event == "respawn":
+            title.set_text(
+                f"RESPAWN | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count} | Known pits: {len(agent.known_pits)}"
+            )
+            title.set_color("darkorange")
+
+        elif event == "stuck":
+            title.set_text(
+                f"STUCK (NO PATH) | Steps: {agent.total_steps} | Deaths: {agent.death_count} | Known pits: {len(agent.known_pits)}"
+            )
+            title.set_color("dimgray")
             if ani_holder["ani"] is not None:
                 ani_holder["ani"].event_source.stop()
 
@@ -479,6 +586,9 @@ if __name__ == "__main__":
     print(f"Goal        : {goal}")
     print(f"Steps       : {agent.total_steps}")
     print(f"Replans     : {agent.replans}")
+    print(f"Deaths      : {agent.death_count}")
+    print(f"Confusions  : {agent.confusion_count}")
     print(f"Reached goal: {agent.done}")
+    print(f"Stuck       : {agent.failed}")
     print(f"Dead        : {agent.dead}")
     print("=" * 50)
