@@ -42,7 +42,7 @@ class MazeAgent:
         self.confused_turns_remaining = 0
         self.confusion_count = 0
         self.confusion_locations = []
-        self.death_count = 0
+        self.Episodes = 0
         self.known_pits = set()
         self.known_pit_phases = {}
         self.pending_respawn = False
@@ -92,7 +92,7 @@ class MazeAgent:
         self.confused_turns_remaining = 2
 
     def _trigger_death(self, cell):
-        self.death_count += 1
+        self.Episodes += 1
         self.known_pits.add(cell)
         phase = (self.total_steps // 5) % len(self.fire_phase_sets)
         self.known_pit_phases.setdefault(cell, set()).add(phase)

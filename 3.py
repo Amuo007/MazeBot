@@ -9,11 +9,11 @@ from agent import MazeAgent
 # ============================================================
 # CONFIG
 # ============================================================
-IMAGE_PATH = "maze_5.png"
-FIRE_SOURCE_IMAGE = "maze_5.png"
+IMAGE_PATH = "maze_5_edited.png"
+FIRE_SOURCE_IMAGE = "maze_5_edited.png"
 SHOW_DEBUG = True
 MAZE_SIZE = 64
-FRAME_MS = 1
+FRAME_MS = 10
 COLOR_TOL = 45
 
 # ============================================================
@@ -546,19 +546,19 @@ if __name__ == "__main__":
 
         elif event == "dead":
             title.set_text(
-                f"DEAD -> RESPAWN NEXT | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count}"
+                f"DEAD -> RESPAWN NEXT | Steps: {agent.total_steps} | Fire: {phase_text} | Episodes: {agent.Episodes}"
             )
             title.set_color("red")
 
         elif event == "respawn":
             title.set_text(
-                f"RESPAWN | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count} | Known pits: {len(agent.known_pits)}"
+                f"RESPAWN | Steps: {agent.total_steps} | Fire: {phase_text} | Episodes: {agent.Episodes} | Known pits: {len(agent.known_pits)}"
             )
             title.set_color("darkorange")
 
         elif event == "stuck":
             title.set_text(
-                f"STUCK (NO PATH) | Steps: {agent.total_steps} | Deaths: {agent.death_count} | Known pits: {len(agent.known_pits)}"
+                f"STUCK (NO PATH) | Steps: {agent.total_steps} | Episodes: {agent.Episodes} | Known pits: {len(agent.known_pits)}"
             )
             title.set_color("dimgray")
             if ani_holder["ani"] is not None:
@@ -566,7 +566,7 @@ if __name__ == "__main__":
 
         elif event == "wait":
             title.set_text(
-                f"WAITING FOR FIRE PHASE | Steps: {agent.total_steps} | Fire: {phase_text} | Deaths: {agent.death_count}"
+                f"WAITING FOR FIRE PHASE | Steps: {agent.total_steps} | Fire: {phase_text} | Episodes: {agent.Episodes}"
             )
             title.set_color("saddlebrown")
 
@@ -599,7 +599,7 @@ if __name__ == "__main__":
     print(f"Goal        : {goal}")
     print(f"Steps       : {agent.total_steps}")
     print(f"Replans     : {agent.replans}")
-    print(f"Deaths      : {agent.death_count}")
+    print(f"Episodes   : {agent.Episodes}")
     print(f"Confusions  : {agent.confusion_count}")
     print(f"Reached goal: {agent.done}")
     print(f"Stuck       : {agent.failed}")
