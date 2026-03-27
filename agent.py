@@ -1,63 +1,113 @@
-import heapq
+from __future__ import annotations
 
-EMPTY = 0
-FIRE = 1
-CONFUSION = 2
-TP_PURPLE = 3
-TP_RED = 4
-TP_GREEN = 5
-START = 6
-GOAL = 7
-UNKNOWN = 99
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
+
+from astar import astar_search_debug
+from environment import Action, TurnResult
+
+Cell = Tuple[int, int]
+
+
+@dataclass
+class AgentMemory:
+    known_walls: Set[Tuple[Cell, Cell]] = field(default_factory=set)
+    known_safe: Set[Cell] = field(default_factory=set)
+    known_pits: Set[Cell] = field(default_factory=set)
+    known_confusion: Set[Cell] = field(default_factory=set)
+    known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
+    visited: Set[Cell] = field(default_factory=set)
+
+
+class ActionController:
+    @staticmethod
+    def move_up() -> Action:
+        return Action.MOVE_UP
+
+    @staticmethod
+    def move_down() -> Action:
+        return Action.MOVE_DOWN
+
+    @staticmethod
+    def move_left() -> Action:
+        return Action.MOVE_LEFT
+
+    @staticmethod
+    def move_right() -> Action:
+        return Action.MOVE_RIGHT
+
+    @staticmethod
+    def wait() -> Action:
+        return Action.WAIT
+
+    @staticmethod
+    def delta_to_action(a: Cell, b: Cell) -> Action:
+        dr = b[0] - a[0]
+        dc = b[1] - a[1]
+        if dr == -1 and dc == 0:
+            return Action.MOVE_UP
+        if dr == 1 and dc == 0:
+            return Action.MOVE_DOWN
+        if dr == 0 and dc == -1:
+            return Action.MOVE_LEFT
+        if dr == 0 and dc == 1:
+            return Action.MOVE_RIGHT
+        return Action.WAIT
 
 
 class MazeAgent:
+    """
+    Starter refactor agent.
+    Still uses full maze knowledge for dev/testing.
+    """
+
     def __init__(
         self,
-        start,
-        goal,
+        start: Cell,
+        goal: Cell,
         vertical_walls,
         horizontal_walls,
         obj_matrix,
         teleport_pairs,
-        fire_phase_sets,
     ):
         self.start = start
         self.goal = goal
-        self.position = start
 
         self.vertical_walls = vertical_walls
         self.horizontal_walls = horizontal_walls
         self.obj_matrix = obj_matrix
         self.teleport_pairs = teleport_pairs
-        self.fire_phase_sets = fire_phase_sets
 
         self.rows, self.cols = obj_matrix.shape
+        self.controller = ActionController()
+        self.memory = AgentMemory()
 
-        self.path = []
-        self.path_index = 0
-        self.visited = [start]
+        self.current_pos: Cell = start
+        self.current_path: List[Cell] = []
+        self.last_result: Optional[TurnResult] = None
 
-        self.total_steps = 0
-        self.replans = 0
-        self.dead = False
-        self.done = False
+        # for visualization
+        self.last_search_expanded: List[Cell] = []
+        self.last_search_closed: Set[Cell] = set()
 
-    def heuristic(self, a, b):
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    def reset_episode(self):
+        self.current_pos = self.start
+        self.current_path = []
+        self.last_result = None
+        self.last_search_expanded = []
+        self.last_search_closed = set()
 
-    def in_bounds(self, cell):
+        self.memory.visited.clear()
+        self.memory.known_safe.clear()
+
+        self.memory.visited.add(self.start)
+        self.memory.known_safe.add(self.start)
+
+    def in_bounds(self, cell: Cell) -> bool:
         r, c = cell
         return 0 <= r < self.rows and 0 <= c < self.cols
 
-    def get_active_fire_cells(self):
-        phase = (self.total_steps // 5) % 4
-        return self.fire_phase_sets[phase]
-
-    def is_blocked_cell(self, cell):
-        return False
-
-    def can_move(self, a, b):
+    def can_move(self, a: Cell, b: Cell) -> bool:
         ar, ac = a
         br, bc = b
 
@@ -66,19 +116,16 @@ class MazeAgent:
 
         if br == ar - 1 and bc == ac:
             return self.horizontal_walls[ar, ac] == 0
-
         if br == ar + 1 and bc == ac:
             return self.horizontal_walls[ar + 1, ac] == 0
-
         if br == ar and bc == ac - 1:
             return self.vertical_walls[ar, ac] == 0
-
         if br == ar and bc == ac + 1:
             return self.vertical_walls[ar, ac + 1] == 0
 
         return False
 
-    def neighbors(self, cell):
+    def neighbors(self, cell: Cell) -> List[Cell]:
         r, c = cell
         out = []
         for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
@@ -86,110 +133,42 @@ class MazeAgent:
                 out.append(nb)
         return out
 
-    def astar(self, start, goal):
-        open_heap = []
-        heapq.heappush(open_heap, (0, start))
+    def plan_path(self, start: Cell, goal: Cell) -> List[Cell]:
+        debug = astar_search_debug(start, goal, self.neighbors)
+        self.last_search_expanded = debug["expanded_order"]
+        self.last_search_closed = debug["closed_set"]
+        return debug["path"]
 
-        came_from = {}
-        g_score = {start: 0}
-        closed = set()
+    def path_to_actions(self, path: List[Cell], limit: int = 5) -> List[Action]:
+        if len(path) < 2:
+            return [self.controller.wait()]
 
-        while open_heap:
-            _, current = heapq.heappop(open_heap)
+        actions: List[Action] = []
+        for i in range(len(path) - 1):
+            actions.append(self.controller.delta_to_action(path[i], path[i + 1]))
+            if len(actions) >= limit:
+                break
 
-            if current in closed:
-                continue
-            closed.add(current)
+        return actions if actions else [self.controller.wait()]
 
-            if current == goal:
-                path = [current]
-                while current in came_from:
-                    current = came_from[current]
-                    path.append(current)
-                path.reverse()
-                return path
+    def update_from_result(self, result: Optional[TurnResult]):
+        if result is None:
+            return
 
-            for nb in self.neighbors(current):
-                tentative_g = g_score[current] + 1
-                if tentative_g < g_score.get(nb, float("inf")):
-                    came_from[nb] = current
-                    g_score[nb] = tentative_g
-                    f = tentative_g + self.heuristic(nb, goal)
-                    heapq.heappush(open_heap, (f, nb))
+        self.last_result = result
+        self.current_pos = result.current_position
+        self.memory.visited.add(self.current_pos)
+        self.memory.known_safe.add(self.current_pos)
 
-        return []
+    def plan_turn(self, last_result: Optional[TurnResult]) -> List[Action]:
+        self.update_from_result(last_result)
 
-    def plan_from(self, pos):
-        self.path = self.astar(pos, self.goal)
-        self.path_index = 0
-        return len(self.path) > 0
+        if self.current_pos == self.goal:
+            return [self.controller.wait()]
 
-    def find_initial_path(self):
-        return self.plan_from(self.start)
+        self.current_path = self.plan_path(self.current_pos, self.goal)
+        if not self.current_path:
+            self.current_path = [self.current_pos]
+            return [self.controller.wait()]
 
-    def get_remaining_path(self):
-        if not self.path:
-            return []
-        return self.path[self.path_index:]
-
-    def step(self):
-        if self.dead:
-            return "dead"
-
-        if self.done:
-            return "goal"
-
-        if not self.path:
-            self.dead = True
-            return "dead"
-
-        if self.position == self.goal:
-            self.done = True
-            return "goal"
-
-        if self.path_index >= len(self.path) - 1:
-            self.position = self.path[-1]
-            if self.position != self.visited[-1]:
-                self.visited.append(self.position)
-            if self.position == self.goal:
-                self.done = True
-                return "goal"
-            return "move"
-
-        self.path_index += 1
-        self.position = self.path[self.path_index]
-        self.visited.append(self.position)
-        self.total_steps += 1
-
-        if self.position in self.get_active_fire_cells():
-            self.dead = True
-            return "dead"
-
-        r, c = self.position
-        tile = self.obj_matrix[r, c]
-
-        if self.position == self.goal or tile == GOAL:
-            self.done = True
-            return "goal"
-
-        if self.position in self.teleport_pairs:
-            self.position = self.teleport_pairs[self.position]
-            self.visited.append(self.position)
-            self.replans += 1
-
-            if self.position in self.get_active_fire_cells():
-                self.dead = True
-                return "dead"
-
-            if self.position == self.goal:
-                self.done = True
-                return "goal"
-
-            ok = self.plan_from(self.position)
-            if not ok:
-                self.dead = True
-                return "dead"
-
-            return "teleport"
-
-        return "move"
+        return self.path_to_actions(self.current_path, limit=5)
