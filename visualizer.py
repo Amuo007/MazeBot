@@ -51,6 +51,18 @@ COL_PATH     = np.array([1.00, 0.95, 0.55])
 COL_SEARCH   = np.array([0.80, 0.92, 1.00])
 COL_CLOSED   = np.array([0.65, 0.82, 0.98])
 
+ACTION_LABELS = {
+    "MOVE_UP": "U",
+    "MOVE_DOWN": "D",
+    "MOVE_LEFT": "L",
+    "MOVE_RIGHT": "R",
+    "WAIT": "W",
+}
+
+
+def format_action(action) -> str:
+    return ACTION_LABELS.get(getattr(action, "name", ""), str(action))
+
 
 def build_display(obj_matrix, env, agent) -> np.ndarray:
     n = obj_matrix.shape[0]
@@ -160,6 +172,7 @@ def show_debug_detection(img_rgb, icons) -> None:
 def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> None:
     fig, ax = plt.subplots(figsize=(10, 10))
     n = env.maze_size
+    fig.subplots_adjust(right=0.78)
 
     ax.set_xlim(0, n)
     ax.set_ylim(n, 0)
@@ -176,28 +189,57 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
     draw_marker_labels(ax, env.obj_matrix)
 
     title = ax.set_title("Turn 0 | Action 0", fontsize=10)
+    action_box = ax.text(
+        1.02,
+        0.98,
+        "Turn actions\n-",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        family="monospace",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="black", alpha=0.95),
+    )
 
     state = {
         "last_turn_result": None,
         "done": False,
         "pending_actions": [],
+        "current_turn_actions": [],
         "turn_confused": False,
         "action_in_turn": 0,
     }
     ani_holder = {"ani": None}
 
+    def update_action_box() -> None:
+        actions = state["current_turn_actions"]
+        if not actions:
+            action_box.set_text("Turn actions\n-")
+            return
+
+        lines = ["Turn actions"]
+        current_index = max(0, state["action_in_turn"] - 1)
+        for index, action in enumerate(actions):
+            marker = ">" if index == current_index else " "
+            lines.append(f"{marker} {index + 1}: {format_action(action)}")
+        action_box.set_text("\n".join(lines))
+
     def update(_frame):
         if state["done"]:
-            return [im, title]
+            update_action_box()
+            return [im, title, action_box]
 
         if not state["pending_actions"]:
             state["pending_actions"] = agent.plan_turn(state["last_turn_result"])
+            state["current_turn_actions"] = list(state["pending_actions"])
             state["turn_confused"] = env.confused_turns_remaining > 0
             env.confused_this_turn = state["turn_confused"]
             state["action_in_turn"] = 0
+            update_action_box()
 
         action = state["pending_actions"].pop(0)
         state["action_in_turn"] += 1
+        update_action_box()
 
         atomic_result = env.step_one_action(action, state["turn_confused"])
 
@@ -247,7 +289,7 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
             )
             title.set_color("black")
 
-        return [im, title]
+        return [im, title, action_box]
 
     ani_holder["ani"] = animation.FuncAnimation(
         fig,
