@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from astar import astar_search_debug
+from astar import astar_search_debug, astar_search
 from environment import Action, TurnResult
 
 Cell = Tuple[int, int]
@@ -134,10 +134,11 @@ class MazeAgent:
         return out
 
     def plan_path(self, start: Cell, goal: Cell) -> List[Cell]:
-        debug = astar_search_debug(start, goal, self.neighbors)
-        self.last_search_expanded = debug["expanded_order"]
-        self.last_search_closed = debug["closed_set"]
-        return debug["path"]
+        debug = astar_search(start, goal, self.neighbors)
+        return debug
+        # self.last_search_expanded = debug["expanded_order"]
+        # self.last_search_closed = debug["closed_set"]
+        # return debug["path"]
 
     def path_to_actions(self, path: List[Cell], limit: int = 5) -> List[Action]:
         if len(path) < 2:

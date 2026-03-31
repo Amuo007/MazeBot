@@ -15,15 +15,12 @@ silent-cartographer/
 ├── environment.py     # Maze parser, tile types, physics, and simulation loop
 ├── visualizer.py      # Matplotlib animator for real-time episode playback
 │
-├── maze_5.png         # Primary maze image (defines walls, start, goal, tiles)
-├── 2.png              # Fire phase 2 image
-├── 3.png              # Fire phase 3 image
-└── 4.png              # Fire phase 4 image
+└── maze_5.png         # Primary maze image (defines walls, start, goal, tiles)
 ```
 
-> 💡 **The maze is defined by images.** Walls are inferred from dark pixels; colored icons define tile types (fire, teleporters, confusion, start, goal).
+> 💡 **The maze is defined by one image.** Walls are inferred from dark pixels; colored icons define tile types (fire, teleporters, confusion, start, goal). Fire phases are derived by rotating the detected fire geometry in `environment.py`.
 
----
+PNG image
 
 ## 🗺️ How It Works — Pipeline Overview
 
@@ -35,7 +32,7 @@ PNG image(s)
      │                ├─ Infer grid step size (pixel gaps between grid lines)
      │                ├─ Build vertical_walls & horizontal_walls matrices
      │                └─ Detect colored icons → object matrix
-     │
+     │                └─ fire_phase_sets (four rotated phases from the base fire layout)
      ▼
 MazeEnvironment  ── Holds all ground truth
      │                ├─ start, goal positions
@@ -65,12 +62,12 @@ MazeEnvironment  ── Holds all ground truth
 ### `main.py` — Entry Point
 
 Bootstraps the full episode:
-1. Creates `MazeEnvironment` from the image(s)
+1. Creates `MazeEnvironment` from the base image
 2. Creates `MazeAgent` using the environment's parsed data
 3. Calls `animate_episode()` which drives the simulation loop
 
 ```python
-env = MazeEnvironment(image_path="maze_5.png", fire_phase_images=[...])
+env = MazeEnvironment(image_path="maze_5.png")
 agent = MazeAgent(start=env.start, goal=env.goal, ...)
 animate_episode(env, agent, max_turns=10000, frame_ms=90)
 ```
@@ -121,11 +118,11 @@ The most complex file. Handles image parsing AND game physics.
 
 #### Fire Phases
 
-Fire alternates between multiple images every 5 actions:
+Fire alternates between four rotated phases every 5 actions:
 ```
 phase = (total_actions_executed // 5) % len(fire_phase_sets)
 ```
-This means fire patterns shift over time, requiring the agent to adapt.
+This means fire patterns shift over time, requiring the agent to adapt without needing separate phase images.
 
 #### `TurnResult` — What the Agent Receives Back
 
@@ -267,7 +264,7 @@ pip install numpy opencv-python matplotlib
 python main.py
 ```
 
-Make sure `maze_5.png`, `2.png`, `3.png`, and `4.png` are in the same directory as `main.py`.
+Make sure `maze_5.png` is in the same directory as `main.py`.
 
 ---
 

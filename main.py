@@ -2,14 +2,13 @@ from agent import MazeAgent
 from environment import MazeEnvironment
 from visualizer import animate_episode
 
-IMAGE_PATH = "maze_5.png"
-FIRE_PHASE_IMAGES = ["maze_5.png", "2.png", "3.png", "4.png"]
+IMAGE_PATH = "maze_5_edited.png"
+ANIMATION_FRAME_MS = 100
 
 
 def main():
     env = MazeEnvironment(
         image_path=IMAGE_PATH,
-        fire_phase_images=FIRE_PHASE_IMAGES,
         maze_size=64,
     )
 
@@ -28,7 +27,7 @@ def main():
     print(f"Start: {env.start}")
     print(f"Goal : {env.goal}")
 
-    animate_episode(env, agent, max_turns=10000, frame_ms=90)
+    animate_episode(env, agent, max_turns=10000, frame_ms=ANIMATION_FRAME_MS)
 
     print("\nEpisode stats:")
     print(env.get_episode_stats())
