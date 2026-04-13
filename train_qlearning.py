@@ -14,9 +14,20 @@ from learning_agent import QLearningAgent
 from environment import MazeEnvironment
 
 
-def compute_reward(result, episode_visited_before: set) -> float:
-    """Compute reward from turn feedback and exploration progress."""
-    reward = -0.05
+def manhattan_distance(a, b) -> int:
+    """Compute Manhattan distance between two cells."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def compute_reward(
+    result,
+    prev_pos,
+    goal,
+    shaping_weight: float,
+) -> float:
+    """Compute reward purely based on MDP state transitions."""
+    # Standard step penalty to encourage shortest path
+    reward = -0.1
 
     if result.wall_hits > 0:
         reward -= 0.5 * result.wall_hits
@@ -27,10 +38,10 @@ def compute_reward(result, episode_visited_before: set) -> float:
     if result.is_goal_reached:
         reward += 100.0
 
-    if result.current_position not in episode_visited_before:
-        reward += 1.0
-    else:
-        reward -= 0.05
+    # Potential-style shaping (Markovian)
+    prev_dist = manhattan_distance(prev_pos, goal)
+    next_dist = manhattan_distance(result.current_position, goal)
+    reward += shaping_weight * (prev_dist - next_dist)
 
     return reward
 
@@ -41,6 +52,8 @@ def train_qlearning(
     max_steps: int = 10000,
     log_interval: int = 10,
     checkpoint_interval: int = 50,
+    shaping_start: float = 1.0,
+    shaping_end: float = 1.0,
 ):
     """
     Train the Q-Learning agent on the maze.
@@ -78,15 +91,25 @@ def train_qlearning(
 
         # Run episode loop using the project turn structure
         while episode_turns < max_steps:
-            state = agent.state_to_key(agent.current_pos, agent.current_confused)
-            episode_visited_before = set(agent.episode_visited)
+            progress_ratio = episode / max(1, num_episodes - 1)
+            shaping_weight = shaping_start + (shaping_end - shaping_start) * progress_ratio
 
+            # Ask agent to plan (this applies last_result and updates its internal state)
             actions = agent.plan_turn(last_result)
             action = actions[0]
 
-            result = env.step(actions)
+            # Capture the state *after* the agent has updated for this turn
+            state = agent.state_to_key(agent.current_pos, agent.current_confused)
+            prev_pos = agent.current_pos
 
-            reward = compute_reward(result, episode_visited_before)
+            result = env.step(actions) 
+
+            reward = compute_reward(
+                result,
+                prev_pos,
+                env.goal,
+                shaping_weight,
+            )
             next_state = agent.state_to_key(result.current_position, result.is_confused)
             agent.update_q(state, action, reward, next_state)
 
@@ -124,6 +147,7 @@ def train_qlearning(
                   f"Avg Steps: {avg_steps:.1f} | "
                   f"Success Rate: {success_rate:.1f}% | "
                   f"Death Rate: {death_rate:.1f}% | "
+                f"ShapeW: {shaping_weight:.3f} | "
                   f"Epsilon: {agent.epsilon:.4f} | "
                   f"Time: {elapsed:.1f}s")
         
@@ -153,8 +177,8 @@ if __name__ == "__main__":
     # Start training
     train_qlearning(
         image_path="maze_5_edited.png",
-        num_episodes=1000,
-        max_steps=10000,
+        num_episodes=250,
+        max_steps=5000,
         log_interval=10,
         checkpoint_interval=50,
     )
