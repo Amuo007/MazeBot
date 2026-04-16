@@ -258,13 +258,22 @@ The animation executes **one action per frame** (not one turn), so you can watch
 
 ```bash
 # Install dependencies
-pip install numpy opencv-python matplotlib
+pip install numpy opencv-python matplotlib torch
 
-# Run the visualized episode
-python main.py
+# Train DQN on all discovered MAZE_*.png / maze_*.png maps
+python main.py --mode train --episodes 800 --max-turns 1500
+
+# Evaluate a trained checkpoint on selected maps
+python main.py --mode eval --checkpoint checkpoints/dqn_maze.pt --maps MAZE_0.png,MAZE_1.png,MAZE_2.png --eval-episodes 5
+
+# Visualize one greedy DQN episode on a specific map
+python main.py --mode play --checkpoint checkpoints/dqn_maze.pt --image MAZE_2.png
+
+# Keep the original A* baseline visualization
+python main.py --mode astar --image maze_5_edited.png
 ```
 
-Make sure `maze_5.png` is in the same directory as `main.py`.
+Make sure the map images you reference in `--image` / `--maps` exist in the project directory.
 
 ---
 
