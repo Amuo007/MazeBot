@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Set, Tuple
 
-import cv2
+import cv2 
 import numpy as np
 
 Cell = Tuple[int, int]
@@ -475,7 +475,8 @@ class MazeEnvironment:
     def step_one_action(self, action: Action, turn_confused: bool) -> TurnResult:
         result = TurnResult(current_position=self.position)
 
-        effective_action = self.apply_confusion(action) if turn_confused else action
+        current_turn_confused = turn_confused or self.confused_this_turn
+        effective_action = self.apply_confusion(action) if current_turn_confused else action
         target = self.action_to_target(self.position, effective_action)
 
         if effective_action != Action.WAIT and not self.can_move(self.position, target):
@@ -483,7 +484,7 @@ class MazeEnvironment:
             result.actions_executed = 1
             self.total_actions_executed += 1
             result.current_position = self.position
-            result.is_confused = turn_confused or self.confused_this_turn
+            result.is_confused = current_turn_confused
             return result
 
         self.position = target
@@ -494,7 +495,7 @@ class MazeEnvironment:
         self.unique_cells.add(self.position)
 
         self._apply_tile_effects(result)
-        result.is_confused = turn_confused or self.confused_this_turn
+        result.is_confused = current_turn_confused or self.confused_this_turn
         return result
 
     def finish_turn(self, result: TurnResult) -> TurnResult:
@@ -506,6 +507,8 @@ class MazeEnvironment:
 
         if self.confused_turns_remaining > 0:
             self.confused_turns_remaining -= 1
+
+        self.confused_this_turn = False
 
         return result
 
