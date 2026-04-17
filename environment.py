@@ -189,8 +189,8 @@ def detect_colored_icons(img_rgb: np.ndarray, step: int, maze_size: int = 64) ->
         if bw > step * 2 or bh > step * 2:
             continue
 
-        patch_mask = labels[y:y+bh, x:x+bw] == i
-        patch_rgb = img_rgb[y:y+bh, x:x+bw][patch_mask]
+        patch_mask = labels[y:y + bh, x:x + bw] == i
+        patch_rgb = img_rgb[y:y + bh, x:x + bw][patch_mask]
         rgb_mean = tuple(np.mean(patch_rgb, axis=0))
 
         cx, cy = centroids[i]
@@ -277,6 +277,7 @@ def split_fire_components(cells: Set[Cell]) -> List[Set[Cell]]:
 
     return components
 
+
 def find_fire_root(component: Set[Cell]) -> Cell:
     comp = set(component)
     candidates = []
@@ -293,17 +294,16 @@ def find_fire_root(component: Set[Cell]) -> Cell:
 
         if len(neighbors) == 2:
             v1, v2 = neighbors
-            # Root of the V has two branch vectors that are not exact opposites.
             if not (v1[0] == -v2[0] and v1[1] == -v2[1]):
                 candidates.append((r, c))
 
     if len(candidates) == 1:
         return candidates[0]
 
-    # Fallback: choose cell nearest to component centroid.
     cr = sum(r for r, _ in comp) / len(comp)
     cc = sum(c for _, c in comp) / len(comp)
     return min(comp, key=lambda p: (p[0] - cr) ** 2 + (p[1] - cc) ** 2)
+
 
 def rotate_point_about_root_90_clockwise(point: Cell, root: Cell) -> Cell:
     pr, pc = point
@@ -321,6 +321,7 @@ def rotate_component_about_root(component: Set[Cell], root: Cell, quarter_turns:
         out = {rotate_point_about_root_90_clockwise(p, root) for p in out}
 
     return {(r, c) for r, c in out if 0 <= r < n and 0 <= c < n}
+
 
 def build_rotating_fire_phase_sets(base_fire_cells: Set[Cell], n: int) -> List[Set[Cell]]:
     components = split_fire_components(base_fire_cells)
@@ -394,6 +395,9 @@ class MazeEnvironment:
     def get_active_fire_cells(self) -> Set[Cell]:
         phase = (self.total_actions_executed // 5) % len(self.fire_phase_sets)
         return self.fire_phase_sets[phase]
+
+    def get_fire_phase(self) -> int:
+        return (self.total_actions_executed // 5) % len(self.fire_phase_sets)
 
     def in_bounds(self, cell: Cell) -> bool:
         r, c = cell
@@ -483,7 +487,7 @@ class MazeEnvironment:
             result.actions_executed = 1
             self.total_actions_executed += 1
             result.current_position = self.position
-            result.is_confused = turn_confused or self.confused_this_turn
+            result.is_confused = self.confused_this_turn
             return result
 
         self.position = target
@@ -516,7 +520,7 @@ class MazeEnvironment:
         final_result = TurnResult(current_position=self.position)
 
         turn_confused = self.confused_turns_remaining > 0
-        self.confused_this_turn = turn_confused
+        self.confused_this_turn = False
 
         for action in actions:
             one = self.step_one_action(action, turn_confused)

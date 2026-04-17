@@ -1,45 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
-from astar import astar_search_debug, astar_search
+from astar import astar_search
 from environment import Action, TurnResult
+from sarsa import QLearner, State, MetaAction
 
 Cell = Tuple[int, int]
 
 
 @dataclass
 class AgentMemory:
-    known_walls: Set[Tuple[Cell, Cell]] = field(default_factory=set)
-    known_safe: Set[Cell] = field(default_factory=set)
-    known_pits: Set[Cell] = field(default_factory=set)
-    known_confusion: Set[Cell] = field(default_factory=set)
-    known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
     visited: Set[Cell] = field(default_factory=set)
+    known_safe: Set[Cell] = field(default_factory=set)
 
 
 class ActionController:
-    @staticmethod
-    def move_up() -> Action:
-        return Action.MOVE_UP
-
-    @staticmethod
-    def move_down() -> Action:
-        return Action.MOVE_DOWN
-
-    @staticmethod
-    def move_left() -> Action:
-        return Action.MOVE_LEFT
-
-    @staticmethod
-    def move_right() -> Action:
-        return Action.MOVE_RIGHT
-
-    @staticmethod
-    def wait() -> Action:
-        return Action.WAIT
-
     @staticmethod
     def delta_to_action(a: Cell, b: Cell) -> Action:
         dr = b[0] - a[0]
@@ -54,13 +31,20 @@ class ActionController:
             return Action.MOVE_RIGHT
         return Action.WAIT
 
+    @staticmethod
+    def invert_action(action: Action) -> Action:
+        if action == Action.MOVE_UP:
+            return Action.MOVE_DOWN
+        if action == Action.MOVE_DOWN:
+            return Action.MOVE_UP
+        if action == Action.MOVE_LEFT:
+            return Action.MOVE_RIGHT
+        if action == Action.MOVE_RIGHT:
+            return Action.MOVE_LEFT
+        return Action.WAIT
+
 
 class MazeAgent:
-    """
-    Starter refactor agent.
-    Still uses full maze knowledge for dev/testing.
-    """
-
     def __init__(
         self,
         start: Cell,
@@ -69,37 +53,44 @@ class MazeAgent:
         horizontal_walls,
         obj_matrix,
         teleport_pairs,
+        qlearner: Optional[QLearner] = None,
+        env=None,
     ):
         self.start = start
         self.goal = goal
-
         self.vertical_walls = vertical_walls
         self.horizontal_walls = horizontal_walls
         self.obj_matrix = obj_matrix
         self.teleport_pairs = teleport_pairs
+        self.env = env
 
         self.rows, self.cols = obj_matrix.shape
         self.controller = ActionController()
         self.memory = AgentMemory()
+        self.qlearner: QLearner = qlearner if qlearner is not None else QLearner()
 
         self.current_pos: Cell = start
         self.current_path: List[Cell] = []
         self.last_result: Optional[TurnResult] = None
 
-        # for visualization
-        self.last_search_expanded: List[Cell] = []
-        self.last_search_closed: Set[Cell] = set()
+        self._last_state: Optional[State] = None
+        self._last_meta_action: Optional[MetaAction] = None
+        self._last_pos_before_action: Optional[Cell] = None
 
-    def reset_episode(self):
+        # This means "the next turn is still under confusion effect"
+        self.confused_turns_remaining = 0
+
+    def reset_episode(self) -> None:
         self.current_pos = self.start
         self.current_path = []
         self.last_result = None
-        self.last_search_expanded = []
-        self.last_search_closed = set()
+        self._last_state = None
+        self._last_meta_action = None
+        self._last_pos_before_action = None
+        self.confused_turns_remaining = 0
 
         self.memory.visited.clear()
         self.memory.known_safe.clear()
-
         self.memory.visited.add(self.start)
         self.memory.known_safe.add(self.start)
 
@@ -110,10 +101,8 @@ class MazeAgent:
     def can_move(self, a: Cell, b: Cell) -> bool:
         ar, ac = a
         br, bc = b
-
         if not self.in_bounds(b):
             return False
-
         if br == ar - 1 and bc == ac:
             return self.horizontal_walls[ar, ac] == 0
         if br == ar + 1 and bc == ac:
@@ -122,54 +111,120 @@ class MazeAgent:
             return self.vertical_walls[ar, ac] == 0
         if br == ar and bc == ac + 1:
             return self.vertical_walls[ar, ac + 1] == 0
-
         return False
 
     def neighbors(self, cell: Cell) -> List[Cell]:
         r, c = cell
-        out = []
-        for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
-            if self.can_move(cell, nb):
-                out.append(nb)
-        return out
+        return [
+            nb for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
+            if self.can_move(cell, nb)
+        ]
 
-    def plan_path(self, start: Cell, goal: Cell) -> List[Cell]:
-        debug = astar_search(start, goal, self.neighbors)
-        return debug
-        # self.last_search_expanded = debug["expanded_order"]
-        # self.last_search_closed = debug["closed_set"]
-        # return debug["path"]
-
-    def path_to_actions(self, path: List[Cell], limit: int = 5) -> List[Action]:
-        if len(path) < 2:
-            return [self.controller.wait()]
-
-        actions: List[Action] = []
-        for i in range(len(path) - 1):
-            actions.append(self.controller.delta_to_action(path[i], path[i + 1]))
-            if len(actions) >= limit:
-                break
-
-        return actions if actions else [self.controller.wait()]
-
-    def update_from_result(self, result: Optional[TurnResult]):
+    def update_from_result(self, result: Optional[TurnResult]) -> None:
         if result is None:
             return
 
         self.last_result = result
         self.current_pos = result.current_position
         self.memory.visited.add(self.current_pos)
-        self.memory.known_safe.add(self.current_pos)
+
+        if not result.is_dead:
+            self.memory.known_safe.add(self.current_pos)
+
+        # If stepped on confusion this turn, next turn is still confused.
+        if result.is_confused:
+            self.confused_turns_remaining = 2
+
+    def _needs_replan(self, last_result: Optional[TurnResult]) -> bool:
+        if not self.current_path:
+            return True
+        if last_result is None:
+            return True
+        if last_result.is_dead:
+            return True
+        if last_result.teleported:
+            return True
+        if self.current_pos not in self.current_path:
+            return True
+        return False
+
+    def _replan(self) -> None:
+        path = astar_search(self.current_pos, self.goal, self.neighbors)
+        self.current_path = path if path else [self.current_pos]
+
+    def _advance_path(self) -> None:
+        if self.current_pos in self.current_path:
+            idx = self.current_path.index(self.current_pos)
+            self.current_path = self.current_path[idx:]
+
+    def astar_suggestion(self) -> Optional[Action]:
+        if len(self.current_path) < 2:
+            return None
+        return self.controller.delta_to_action(self.current_path[0], self.current_path[1])
+
+    def get_state(self) -> State:
+        r, c = self.current_pos
+        fire_phase = self.env.get_fire_phase() if self.env is not None else 0
+        confused_flag = 1 if self.confused_turns_remaining > 0 else 0
+        return (r, c, confused_flag, fire_phase)
+
+    def choose_primitive_action(self, meta_action: MetaAction) -> Action:
+        if meta_action == MetaAction.WAIT:
+            return Action.WAIT
+
+        suggestion = self.astar_suggestion()
+        base_action = suggestion if suggestion is not None else Action.WAIT
+
+        if meta_action == MetaAction.FOLLOW_ASTAR_INVERTED:
+            return self.controller.invert_action(base_action)
+
+        return base_action
 
     def plan_turn(self, last_result: Optional[TurnResult]) -> List[Action]:
         self.update_from_result(last_result)
 
         if self.current_pos == self.goal:
-            return [self.controller.wait()]
+            return [Action.WAIT]
 
-        self.current_path = self.plan_path(self.current_pos, self.goal)
-        if not self.current_path:
-            self.current_path = [self.current_pos]
-            return [self.controller.wait()]
+        current_state = self.get_state()
 
-        return self.path_to_actions(self.current_path, limit=5)
+        if self._needs_replan(last_result):
+            self._replan()
+        else:
+            self._advance_path()
+
+        if (
+            self._last_state is not None
+            and self._last_meta_action is not None
+            and last_result is not None
+            and self._last_pos_before_action is not None
+        ):
+            moved = (self.current_pos != self._last_pos_before_action)
+
+            reward = QLearner.compute_reward(
+                is_dead=last_result.is_dead,
+                is_goal=last_result.is_goal_reached,
+                wall_hits=last_result.wall_hits,
+                chosen_meta_action=self._last_meta_action,
+                moved=moved,
+            )
+
+            self.qlearner.update(
+                self._last_state,
+                self._last_meta_action,
+                reward,
+                current_state,
+            )
+
+        chosen_meta_action = self.qlearner.select_action(current_state)
+        primitive_action = self.choose_primitive_action(chosen_meta_action)
+
+        self._last_state = current_state
+        self._last_meta_action = chosen_meta_action
+        self._last_pos_before_action = self.current_pos
+
+        # consume the one-next-turn confusion memory
+        if self.confused_turns_remaining > 0:
+            self.confused_turns_remaining -= 1
+
+        return [primitive_action]
