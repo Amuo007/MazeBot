@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from astar import astar_search, astar_search_debug
 from environment import Action, MazeEnvironment, TurnResult
 
 Cell = Tuple[int, int]
@@ -77,6 +78,9 @@ class QNetwork(nn.Module):
 @dataclass
 class AgentMemory:
     visited: Set[Cell] = field(default_factory=set)
+    known_walls: Set[Tuple[Cell, Cell]] = field(default_factory=set)
+    known_hazards: Set[Cell] = field(default_factory=set)
+    known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
 
 
 class DQNAgent:
@@ -100,6 +104,7 @@ class DQNAgent:
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
         epsilon_decay_steps: int = 75_000,
+        astar_follow_prob: float = 0.80,
         device: Optional[str] = None,
     ) -> None:
         self.env: Optional[MazeEnvironment] = env
@@ -117,6 +122,7 @@ class DQNAgent:
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay_steps = epsilon_decay_steps
+        self.astar_follow_prob = astar_follow_prob
 
         self.policy_net = QNetwork(self.input_dim, len(ACTIONS)).to(self.device)
         self.target_net = QNetwork(self.input_dim, len(ACTIONS)).to(self.device)
@@ -128,9 +134,14 @@ class DQNAgent:
 
         self.training_steps = 0
         self.memory = AgentMemory()
-        self.visit_counts: Dict[Cell, int] = {}
+        self.global_visit_counts: Dict[Cell, int] = {}
+        self.hazard_hit_counts: Dict[Cell, int] = {}
         self.last_result: Optional[TurnResult] = None
         self.last_action_idx: int = ACTION_TO_INDEX[Action.WAIT]
+        self.pending_prev_pos: Optional[Cell] = None
+        self.pending_action_idx: Optional[int] = None
+        self.pending_pre_step_confused: bool = False
+        self.current_path: List[Cell] = []
 
         # Keep these attributes to stay compatible with the visualizer overlays.
         self.last_search_expanded: List[Cell] = []
@@ -150,9 +161,15 @@ class DQNAgent:
     def _init_episode_state(self, env: MazeEnvironment) -> None:
         self.memory.visited.clear()
         self.memory.visited.add(env.position)
-        self.visit_counts = {env.position: 1}
+        self.global_visit_counts[env.position] = self.global_visit_counts.get(env.position, 0) + 1
         self.last_result = None
         self.last_action_idx = ACTION_TO_INDEX[Action.WAIT]
+        self.pending_prev_pos = None
+        self.pending_action_idx = None
+        self.pending_pre_step_confused = False
+        self.current_path = []
+        self.last_search_expanded = []
+        self.last_search_closed = set()
 
     @staticmethod
     def _manhattan(a: Cell, b: Cell) -> int:
@@ -165,7 +182,113 @@ class DQNAgent:
         self.last_action_idx = action_idx
         self.last_result = result
         self.memory.visited.add(result.current_position)
-        self.visit_counts[result.current_position] = self.visit_counts.get(result.current_position, 0) + 1
+        self.global_visit_counts[result.current_position] = self.global_visit_counts.get(result.current_position, 0) + 1
+
+    @staticmethod
+    def _edge_key(a: Cell, b: Cell) -> Tuple[Cell, Cell]:
+        return (a, b) if a <= b else (b, a)
+
+    @staticmethod
+    def _is_move_action(action: Action) -> bool:
+        return action in {
+            Action.MOVE_UP,
+            Action.MOVE_DOWN,
+            Action.MOVE_LEFT,
+            Action.MOVE_RIGHT,
+        }
+
+    def _delta_to_action_idx(self, a: Cell, b: Cell) -> int:
+        dr = b[0] - a[0]
+        dc = b[1] - a[1]
+        if dr == -1 and dc == 0:
+            return ACTION_TO_INDEX[Action.MOVE_UP]
+        if dr == 1 and dc == 0:
+            return ACTION_TO_INDEX[Action.MOVE_DOWN]
+        if dr == 0 and dc == -1:
+            return ACTION_TO_INDEX[Action.MOVE_LEFT]
+        if dr == 0 and dc == 1:
+            return ACTION_TO_INDEX[Action.MOVE_RIGHT]
+        return ACTION_TO_INDEX[Action.WAIT]
+
+    def _update_world_model(
+        self,
+        env: MazeEnvironment,
+        prev_pos: Cell,
+        action_idx: int,
+        result: TurnResult,
+        pre_step_confused: bool,
+    ) -> None:
+        action = ACTIONS[action_idx]
+        effective_action = env.apply_confusion(action) if pre_step_confused else action
+        target = env.action_to_target(prev_pos, effective_action)
+
+        if self._is_move_action(effective_action):
+            if result.wall_hits > 0 and result.current_position == prev_pos:
+                edge = self._edge_key(prev_pos, target)
+                self.memory.known_walls.add(edge)
+
+            if result.teleported and not result.is_dead and target != result.current_position:
+                self.memory.known_teleports[target] = result.current_position
+
+            if result.is_dead and not result.teleported and env.in_bounds(target):
+                self.hazard_hit_counts[target] = self.hazard_hit_counts.get(target, 0) + 1
+                # Require repeated evidence to avoid overfitting one-off dynamic hazard hits.
+                if self.hazard_hit_counts[target] >= 2:
+                    self.memory.known_hazards.add(target)
+
+    def _neighbors_for_astar(self, env: MazeEnvironment, cell: Cell) -> List[Cell]:
+        r, c = cell
+        out: List[Cell] = []
+
+        for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
+            if not env.in_bounds(nb):
+                continue
+            if self._edge_key(cell, nb) in self.memory.known_walls:
+                continue
+            if nb in self.memory.known_hazards:
+                continue
+            out.append(nb)
+
+        return out
+
+    def _astar_action_index(
+        self,
+        env: MazeEnvironment,
+        pre_step_confused: bool,
+        debug: bool = False,
+    ) -> Optional[int]:
+        if env.position == env.goal:
+            self.current_path = [env.position]
+            return ACTION_TO_INDEX[Action.WAIT]
+
+        if debug:
+            debug_out = astar_search_debug(
+                env.position,
+                env.goal,
+                lambda cell: self._neighbors_for_astar(env, cell),
+            )
+            self.current_path = debug_out["path"]
+            self.last_search_expanded = debug_out["expanded_order"]
+            self.last_search_closed = debug_out["closed_set"]
+            path = debug_out["path"]
+        else:
+            path = astar_search(
+                env.position,
+                env.goal,
+                lambda cell: self._neighbors_for_astar(env, cell),
+            )
+            self.current_path = path
+
+        if len(path) < 2:
+            return None
+
+        desired_idx = self._delta_to_action_idx(path[0], path[1])
+        desired_action = ACTIONS[desired_idx]
+        if not pre_step_confused:
+            return desired_idx
+
+        command_action = env.apply_confusion(desired_action)
+        return ACTION_TO_INDEX[command_action]
 
     def extract_state(self, env: MazeEnvironment) -> np.ndarray:
         pos = env.position
@@ -193,7 +316,7 @@ class DQNAgent:
         last_action_one_hot = [0.0] * len(ACTIONS)
         last_action_one_hot[self.last_action_idx] = 1.0
 
-        visit_count_norm = min(1.0, self.visit_counts.get(pos, 0) / 10.0)
+        visit_count_norm = min(1.0, self.global_visit_counts.get(pos, 0) / 10.0)
 
         features: List[float] = [
             pos[0] / max(1.0, float(env.maze_size - 1)),
@@ -229,7 +352,14 @@ class DQNAgent:
             q_values = self.policy_net(state_tensor)
             return int(torch.argmax(q_values, dim=1).item())
 
-    def _compute_reward(self, prev_pos: Cell, result: TurnResult, env: MazeEnvironment) -> float:
+    def _compute_reward(
+        self,
+        prev_pos: Cell,
+        result: TurnResult,
+        env: MazeEnvironment,
+        discovered_new_cell: bool,
+        warmup_phase: bool,
+    ) -> float:
         new_pos = result.current_position
 
         prev_dist = self._manhattan(prev_pos, env.goal)
@@ -243,11 +373,13 @@ class DQNAgent:
         if result.is_dead:
             reward -= 25.0
         if result.is_goal_reached:
-            reward += 200.0
+            reward += 40.0 if warmup_phase else 200.0
         if result.is_confused:
             reward -= 0.05
         if result.current_position == prev_pos and not result.is_goal_reached:
             reward -= 0.15
+        if discovered_new_cell:
+            reward += 0.75 if warmup_phase else 0.20
 
         return float(reward)
 
@@ -291,6 +423,7 @@ class DQNAgent:
         seed: int = 7,
         checkpoint_path: Optional[str] = None,
         checkpoint_every: int = 25,
+        warmup_episodes: int = 20,
     ) -> Dict[str, List[float]]:
         if not map_paths:
             raise ValueError("map_paths cannot be empty")
@@ -312,22 +445,46 @@ class DQNAgent:
             env.reset()
             self.bind_environment(env)
 
+            warmup_phase = episode_idx <= max(0, warmup_episodes)
+
             total_reward = 0.0
             total_loss = 0.0
             loss_count = 0
 
             for _ in range(max_turns):
                 state = self.extract_state(env)
-                action_idx = self.select_action_index(state, explore=True)
+                pre_step_confused = env.confused_turns_remaining > 0
+
+                if warmup_phase:
+                    if random.random() < 0.85:
+                        action_idx = random.randrange(len(ACTIONS))
+                    else:
+                        action_idx = self.select_action_index(state, explore=True)
+                else:
+                    astar_idx = self._astar_action_index(env, pre_step_confused=pre_step_confused, debug=False)
+                    rl_idx = self.select_action_index(state, explore=True)
+                    if astar_idx is not None and random.random() < self.astar_follow_prob:
+                        action_idx = astar_idx
+                    else:
+                        action_idx = rl_idx
+
                 action = ACTIONS[action_idx]
 
                 prev_pos = env.position
                 result = env.step([action])
+                discovered_new_cell = result.current_position not in self.global_visit_counts
+                self._update_world_model(env, prev_pos, action_idx, result, pre_step_confused)
                 self._record_step(action_idx, result)
 
                 next_state = self.extract_state(env)
                 done = result.is_goal_reached or env.turns_taken >= max_turns
-                reward = self._compute_reward(prev_pos, result, env)
+                reward = self._compute_reward(
+                    prev_pos,
+                    result,
+                    env,
+                    discovered_new_cell=discovered_new_cell,
+                    warmup_phase=warmup_phase,
+                )
 
                 total_reward += reward
                 self.replay_buffer.push(state, action_idx, reward, next_state, done)
@@ -354,6 +511,7 @@ class DQNAgent:
                 avg_steps = float(np.mean(history["episode_steps"][recent]))
                 print(
                     f"[train] ep={episode_idx:04d} "
+                    f"phase={'warmup' if warmup_phase else 'hybrid'} "
                     f"eps={self.epsilon():.3f} "
                     f"success={success_rate:.2f} "
                     f"avg_reward={avg_reward:.2f} "
@@ -393,8 +551,16 @@ class DQNAgent:
 
                 for _ in range(max_turns):
                     state = self.extract_state(env)
-                    action_idx = self.select_action_index(state, explore=False)
+                    pre_step_confused = env.confused_turns_remaining > 0
+                    astar_idx = self._astar_action_index(env, pre_step_confused=pre_step_confused, debug=False)
+                    if astar_idx is not None:
+                        action_idx = astar_idx
+                    else:
+                        action_idx = self.select_action_index(state, explore=False)
+
+                    prev_pos = env.position
                     result = env.step([ACTIONS[action_idx]])
+                    self._update_world_model(env, prev_pos, action_idx, result, pre_step_confused)
                     self._record_step(action_idx, result)
                     if result.is_goal_reached:
                         break
@@ -417,16 +583,34 @@ class DQNAgent:
         if self.env is None:
             raise RuntimeError("DQNAgent is not bound to an environment")
 
-        if last_result is not None:
-            self.last_result = last_result
-            self.memory.visited.add(last_result.current_position)
-            self.visit_counts[last_result.current_position] = self.visit_counts.get(last_result.current_position, 0) + 1
+        if (
+            last_result is not None
+            and self.pending_prev_pos is not None
+            and self.pending_action_idx is not None
+        ):
+            self._update_world_model(
+                self.env,
+                self.pending_prev_pos,
+                self.pending_action_idx,
+                last_result,
+                self.pending_pre_step_confused,
+            )
+            self._record_step(self.pending_action_idx, last_result)
 
         if self.env.position == self.env.goal:
             return [Action.WAIT]
 
+        pre_step_confused = self.env.confused_turns_remaining > 0
         state = self.extract_state(self.env)
-        action_idx = self.select_action_index(state, explore=False)
+        astar_idx = self._astar_action_index(self.env, pre_step_confused=pre_step_confused, debug=True)
+        if astar_idx is not None:
+            action_idx = astar_idx
+        else:
+            action_idx = self.select_action_index(state, explore=False)
+
+        self.pending_prev_pos = self.env.position
+        self.pending_action_idx = action_idx
+        self.pending_pre_step_confused = pre_step_confused
         self.last_action_idx = action_idx
         return [ACTIONS[action_idx]]
 

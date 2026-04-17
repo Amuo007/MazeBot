@@ -76,6 +76,7 @@ def run_dqn_train(args: argparse.Namespace, project_root: Path) -> None:
         seed=args.seed,
         checkpoint_path=args.checkpoint,
         checkpoint_every=25,
+        warmup_episodes=args.warmup_episodes,
     )
     agent.save(args.checkpoint, map_paths=map_paths)
 
@@ -151,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--log-every", type=int, default=25)
+    parser.add_argument("--warmup-episodes", type=int, default=20, help="Number of initial exploration-only episodes before hybrid RL+A* mode.")
     return parser
 
 
