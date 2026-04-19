@@ -4,7 +4,7 @@ from environment import MazeEnvironment
 from sarsa import QLearner
 from visualizer import animate_episode
 
-IMAGE_PATH = "maze_9.png"
+IMAGE_PATH = "maze_11.png"
 ANIMATION_FRAME_MS = 100
 
 TRAIN_EPISODES = 500

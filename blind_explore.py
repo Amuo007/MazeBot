@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import ast
 import heapq
-import json
-import os
-import random
 from collections import deque
 from dataclasses import dataclass
-from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.animation as animation
@@ -19,22 +14,23 @@ from environment import (
     CONFUSION,
     EMPTY,
     FIRE,
+    FIRE_CENTER,
     GOAL,
     MazeEnvironment,
     START,
     TP_GREEN,
+    TP_LAVENDER,
     TP_PURPLE,
     TP_RED,
     UNKNOWN,
 )
 
 Cell = Tuple[int, int]
-State = Tuple[int, int, int, int, int, int]
 
 # ============================================================
 # CONFIG
 # ============================================================
-IMAGE_PATH = "maze_6.png"
+IMAGE_PATH = "maze_12.png"
 MAZE_SIZE = 64
 MAX_PHYSICAL_STEPS = 20000
 FIRE_PHASE_TICKS = 5
@@ -42,7 +38,7 @@ FIRE_PHASE_TICKS = 5
 TRAIN_EPISODES = 220
 TRAINING_STEP_BUDGET = 4500
 TRAIN_PRINT_EVERY = 10
-SUCCESS_STREAK_TO_STOP = 3
+SUCCESS_STREAK_TO_STOP = 1
 MAX_WAIT_CHAIN = 8
 STALL_FRONTIER_TRIGGER = 300
 
@@ -58,10 +54,12 @@ PRINT_EVERY = 250
 DISPLAY_COLORS = {
     EMPTY: np.array([1.00, 1.00, 1.00]),
     FIRE: np.array([255, 145, 76]) / 255.0,
+    FIRE_CENTER: np.array([253, 183, 140]) / 255.0,
     CONFUSION: np.array([255, 222, 89]) / 255.0,
     TP_PURPLE: np.array([140, 82, 255]) / 255.0,
     TP_RED: np.array([255, 49, 50]) / 255.0,
     TP_GREEN: np.array([1, 191, 99]) / 255.0,
+    TP_LAVENDER: np.array([226, 169, 241]) / 255.0,
     START: np.array([15, 192, 223]) / 255.0,
     GOAL: np.array([0, 74, 173]) / 255.0,
     UNKNOWN: np.array([0.68, 0.68, 0.68]),
@@ -108,12 +106,6 @@ def invert_action(action: Action) -> Action:
     if action == Action.MOVE_RIGHT:
         return Action.MOVE_LEFT
     return Action.WAIT
-
-
-def qtable_path_for(image_path: str) -> str:
-    stem = os.path.splitext(os.path.basename(image_path))[0]
-    return f"blind_qtable_{stem}_stepdir_v9.json"
-
 
 def fire_cycle_len(env: MazeEnvironment) -> int:
     return max(1, len(env.fire_phase_sets) * FIRE_PHASE_TICKS)
@@ -490,29 +482,6 @@ def plan_timed_route(
     return None
 
 
-# ============================================================
-# STEP-LEVEL Q-LEARNING
-#   GO = follow the currently planned blind route/probe
-#   WAIT = spend one action to shift fire phase
-# ============================================================
-class StepDecision(Enum):
-    GO = 0
-    WAIT = 1
-
-
-STEP_DECISIONS = [StepDecision.GO, StepDecision.WAIT]
-
-REWARD_GOAL = 100.0
-REWARD_DEATH = -80.0
-REWARD_STEP_COST = -0.20
-REWARD_GO_MOVE = 1.80
-REWARD_NEW_CELL = 2.50
-REWARD_NEW_INFO = 0.60
-REWARD_WAIT = -0.70
-REWARD_WALL = -0.10
-REWARD_DIVERGE = -0.60
-
-
 @dataclass
 class StepOutcome:
     event: str
@@ -530,110 +499,6 @@ class PlannedStep:
     step_cell: Optional[Cell]
     landing: Cell
 
-
-class BlindStepQLearner:
-    def __init__(
-        self,
-        alpha: float = 0.18,
-        gamma: float = 0.96,
-        epsilon: float = 1.0,
-        epsilon_min: float = 0.03,
-        epsilon_decay: float = 0.985,
-    ):
-        self.alpha = alpha
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.q_table: Dict[State, List[float]] = {}
-
-    def _get_q(self, state: State) -> List[float]:
-        if state not in self.q_table:
-            self.q_table[state] = [0.0] * len(STEP_DECISIONS)
-        return self.q_table[state]
-
-    def state_for(self, cell: Cell, planned_step: Cell, env: MazeEnvironment) -> State:
-        confused_flag = 1 if env.confused_turns_remaining > 0 else 0
-        dr = planned_step[0] - cell[0]
-        dc = planned_step[1] - cell[1]
-        return (cell[0], cell[1], dr, dc, confused_flag, fire_time_mod(env))
-
-    def best_action(self, state: State) -> StepDecision:
-        q_vals = self._get_q(state)
-        return max(STEP_DECISIONS, key=lambda action: q_vals[action.value])
-
-    def select_action(self, state: State, training: bool) -> StepDecision:
-        if training and random.random() < self.epsilon:
-            return random.choice(STEP_DECISIONS)
-        return self.best_action(state)
-
-    def update(
-        self,
-        state: State,
-        action: StepDecision,
-        reward: float,
-        next_state: Optional[State],
-    ) -> None:
-        q_sa = self._get_q(state)[action.value]
-        q_next = 0.0 if next_state is None else max(self._get_q(next_state))
-        td_target = reward + self.gamma * q_next
-        self.q_table[state][action.value] += self.alpha * (td_target - q_sa)
-
-    def decay_epsilon(self) -> None:
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
-    @staticmethod
-    def compute_reward(action: StepDecision, outcome: StepOutcome) -> float:
-        if outcome.is_goal:
-            return REWARD_GOAL
-        if outcome.is_dead:
-            return REWARD_DEATH
-
-        reward = REWARD_STEP_COST
-
-        if action == StepDecision.WAIT:
-            reward += REWARD_WAIT
-
-        if action == StepDecision.GO and outcome.moved:
-            reward += REWARD_GO_MOVE
-
-        if outcome.discovered_new_cell:
-            reward += REWARD_NEW_CELL
-
-        if outcome.discovered_new_info:
-            reward += REWARD_NEW_INFO
-
-        if outcome.wall_hit:
-            reward += REWARD_WALL
-
-        if outcome.event == "diverged":
-            reward += REWARD_DIVERGE
-
-        return reward
-
-    def save(self, path: str) -> None:
-        data = {
-            "q_table": {str(state): values for state, values in self.q_table.items()},
-            "epsilon": self.epsilon,
-        }
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
-        print(f"[Q-learning] Q-table saved -> {path} ({len(self.q_table)} states)")
-
-    def load(self, path: str) -> bool:
-        if not os.path.exists(path):
-            return False
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        self.q_table = {
-            ast.literal_eval(state): values
-            for state, values in data.get("q_table", {}).items()
-        }
-        self.epsilon = data.get("epsilon", self.epsilon)
-        print(f"[Q-learning] Q-table loaded <- {path} ({len(self.q_table)} states)")
-        return True
-
-
 # ============================================================
 # BLIND EXPLORER
 # ============================================================
@@ -642,15 +507,11 @@ class BlindExplorer:
         self,
         env: MazeEnvironment,
         knowledge: Optional[BlindKnowledge] = None,
-        learner: Optional[BlindStepQLearner] = None,
-        training: bool = False,
         record_history: bool = True,
     ):
         self.env = env
         self.knowledge = knowledge if knowledge is not None else BlindKnowledge(env.maze_size, env.start, env.goal)
         self.knowledge.start_new_episode()
-        self.learner = learner
-        self.training = training
         self.record_history = record_history
 
         self.current: Cell = env.start
@@ -697,9 +558,6 @@ class BlindExplorer:
         if int(self.env.obj_matrix[cell]) == CONFUSION:
             self.knowledge.confusion_cells.add(cell)
             self.confusions_entered += 1
-
-    def _time_mod_after_one_action(self) -> int:
-        return (self.env.total_actions_executed + 1) % fire_cycle_len(self.env)
 
     def _mark_new_info(self) -> None:
         self.last_new_info_step = self.physical_steps
@@ -865,88 +723,6 @@ class BlindExplorer:
             teleported=False,
         )
 
-    def _guarded_step(self, next_cell: Cell, target: Optional[Cell], max_steps: int) -> str:
-        wait_chain = 0
-
-        while self.physical_steps < max_steps:
-            if self.learner is None:
-                return self._step_physical(next_cell, target).event
-
-            state = self.learner.state_for(self.current, next_cell, self.env)
-            next_time_mod = self._time_mod_after_one_action()
-            go_landing = self.knowledge.teleport_pairs.get(next_cell, next_cell)
-            go_deadly = self.knowledge.is_deadly_at_time(go_landing, next_time_mod)
-            wait_deadly = self.knowledge.is_deadly_at_time(self.current, next_time_mod)
-
-            if go_deadly and not wait_deadly and wait_chain < MAX_WAIT_CHAIN:
-                decision = StepDecision.WAIT
-            elif wait_deadly and not go_deadly:
-                decision = StepDecision.GO
-            elif wait_chain >= MAX_WAIT_CHAIN:
-                decision = StepDecision.GO
-            else:
-                decision = self.learner.select_action(state, training=self.training)
-
-            if decision == StepDecision.WAIT:
-                outcome = self._wait_physical(target)
-                if outcome.event == "wait":
-                    next_state = self.learner.state_for(self.current, next_cell, self.env)
-                else:
-                    next_state = None
-            else:
-                outcome = self._step_physical(next_cell, target)
-                next_state = None
-            if self.training:
-                reward = self.learner.compute_reward(decision, outcome)
-                self.learner.update(state, decision, reward, next_state)
-
-            if decision == StepDecision.WAIT and outcome.event == "wait":
-                wait_chain += 1
-                continue
-
-            return outcome.event
-
-        return "budget"
-
-    def _walk_route(
-        self,
-        route: List[Cell],
-        target: Optional[Cell],
-        max_steps: int,
-        optimistic: bool,
-    ) -> str:
-        i = 0
-        while i < len(route) and self.current == route[i]:
-            i += 1
-
-        while i < len(route):
-            nxt = route[i]
-            if self.current == nxt:
-                i += 1
-                continue
-
-            step_cell = self.knowledge.find_walk_step(self.current, nxt, optimistic=optimistic)
-            if step_cell is None:
-                return "blocked"
-
-            event = self._guarded_step(step_cell, target=target, max_steps=max_steps)
-            if event == "budget":
-                return "budget"
-            self._log_progress(event, target)
-            if event != "moved":
-                return "blocked"
-            if self.current == self.knowledge.goal:
-                return "goal"
-
-            advanced = False
-            while i < len(route) and self.current == route[i]:
-                advanced = True
-                i += 1
-            if not advanced:
-                return "blocked"
-
-        return "arrived"
-
     def _follow_timed_plan(
         self,
         plan: List[PlannedStep],
@@ -1042,21 +818,17 @@ class BlindExplorer:
 
 
 # ============================================================
-# TRAINING / EVALUATION
+# EXPLORATION / EVALUATION
 # ============================================================
-def train_blind_step_policy(image_path: str) -> Tuple[BlindStepQLearner, BlindKnowledge, int]:
-    qtable_path = qtable_path_for(image_path)
-    learner = BlindStepQLearner()
-    learner.load(qtable_path)
-
+def build_blind_knowledge(image_path: str) -> Tuple[BlindKnowledge, int]:
     env = MazeEnvironment(image_path=image_path, maze_size=MAZE_SIZE)
     learned_knowledge = BlindKnowledge(env.maze_size, env.start, env.goal)
     best_knowledge: Optional[BlindKnowledge] = None
     best_reached = False
     best_score = -1
 
-    print("Training blind GO/WAIT policy...")
-    print("  (episodes share learned map/fire memory; the Q-table persists too)\n")
+    print("Building blind exploration memory...")
+    print("  (episodes share discovered map/fire memory)\n")
 
     success_streak = 0
     episodes_ran = 0
@@ -1066,12 +838,9 @@ def train_blind_step_policy(image_path: str) -> Tuple[BlindStepQLearner, BlindKn
         explorer = BlindExplorer(
             env,
             knowledge=learned_knowledge,
-            learner=learner,
-            training=True,
             record_history=False,
         )
         reached = explorer.run(max_steps=TRAINING_STEP_BUDGET)
-        learner.decay_epsilon()
         episodes_ran = episode
 
         if reached:
@@ -1091,26 +860,23 @@ def train_blind_step_policy(image_path: str) -> Tuple[BlindStepQLearner, BlindKn
 
         if episode == 1 or episode % TRAIN_PRINT_EVERY == 0 or reached:
             print(
-                f"[TRAIN] ep={episode:03d} reached={reached!s:5s} "
+                f"[EXPLORE] ep={episode:03d} reached={reached!s:5s} "
                 f"steps={explorer.physical_steps:4d} "
                 f"mapped={len(learned_knowledge.visited):4d} "
                 f"walls={len(learned_knowledge.blocked_edges) // 2:4d} "
-                f"deaths={explorer.deaths:3d} "
-                f"eps={learner.epsilon:.3f}"
+                f"deaths={explorer.deaths:3d}"
             )
 
         if success_streak >= SUCCESS_STREAK_TO_STOP:
-            print(f"[TRAIN] early stop after {success_streak} consecutive successes")
+            print(f"[EXPLORE] early stop after {success_streak} consecutive successes")
             break
 
-    learner.save(qtable_path)
     print()
-    return learner, best_knowledge if best_knowledge is not None else learned_knowledge.clone(), episodes_ran
+    return best_knowledge if best_knowledge is not None else learned_knowledge.clone(), episodes_ran
 
 
 def evaluate_policy(
     image_path: str,
-    learner: BlindStepQLearner,
     seed_knowledge: Optional[BlindKnowledge] = None,
 ) -> Tuple[MazeEnvironment, BlindExplorer, bool]:
     env = MazeEnvironment(image_path=image_path, maze_size=MAZE_SIZE)
@@ -1118,8 +884,6 @@ def evaluate_policy(
     explorer = BlindExplorer(
         env,
         knowledge=seed_knowledge.clone() if seed_knowledge is not None else BlindKnowledge(env.maze_size, env.start, env.goal),
-        learner=learner,
-        training=False,
         record_history=True,
     )
     reached = explorer.run(max_steps=MAX_PHYSICAL_STEPS)
@@ -1136,7 +900,7 @@ def build_display(env: MazeEnvironment, snap: dict) -> np.ndarray:
     for r, c in snap["visited"]:
         tile = int(env.obj_matrix[r, c])
         base = DISPLAY_COLORS.get(tile, DISPLAY_COLORS[EMPTY])
-        if tile == FIRE:
+        if tile in (FIRE, FIRE_CENTER):
             base = DISPLAY_COLORS[EMPTY]
         disp[r, c] = base * 0.45 + COL_VISITED * 0.55
 
@@ -1207,7 +971,7 @@ def animate(env: MazeEnvironment, explorer: BlindExplorer, final_path: List[Cell
     wall_lines, = ax.plot([], [], color="black", linewidth=0.9)
     path_line, = ax.plot([], [], color="orange", linewidth=2.2)
 
-    title = ax.set_title("Blind Q-learning exploration", fontsize=10)
+    title = ax.set_title("Blind exploration", fontsize=10)
     stats_box = ax.text(
         1.02,
         0.98,
@@ -1242,7 +1006,7 @@ def animate(env: MazeEnvironment, explorer: BlindExplorer, final_path: List[Cell
         wall_lines.set_data(xs, ys)
 
         title.set_text(
-            f"Blind Q-learning exploration | step {snap['steps']} | "
+            f"Blind exploration | step {snap['steps']} | "
             f"visited {len(snap['visited'])} | deaths {snap['deaths']} | event {snap['event']}"
         )
         stats_box.set_text(
@@ -1290,21 +1054,20 @@ def main() -> None:
     print(f"Start: {preview_env.start}")
     print(f"Goal : {preview_env.goal}\n")
 
-    learner, training_knowledge, episodes_ran = train_blind_step_policy(IMAGE_PATH)
+    training_knowledge, episodes_ran = build_blind_knowledge(IMAGE_PATH)
 
-    print("Running learned-memory evaluation...")
-    print("  (the learned map/fire memory is reused here, so this measures actual retained learning)\n")
+    print("Running retained-memory evaluation...")
+    print("  (the discovered map/fire memory is reused here)\n")
 
-    env, explorer, reached = evaluate_policy(IMAGE_PATH, learner, seed_knowledge=training_knowledge)
+    env, explorer, reached = evaluate_policy(IMAGE_PATH, seed_knowledge=training_knowledge)
 
     if reached:
         print("GOAL REACHED")
     else:
         print("GOAL NOT REACHED (evaluation stayed blind but ran out of progress or budget)")
 
-    print(f"Training episodes     : {episodes_ran}")
-    print(f"Q-table states        : {len(learner.q_table)}")
-    print(f"Best train map size   : {len(training_knowledge.visited)}")
+    print(f"Exploration episodes  : {episodes_ran}")
+    print(f"Best map size         : {len(training_knowledge.visited)}")
     print(f"Physical steps        : {explorer.physical_steps}")
     print(f"Cells discovered      : {len(explorer.knowledge.visited)}")
     print(f"Walls discovered      : {len(explorer.knowledge.blocked_edges) // 2}")

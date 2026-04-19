@@ -18,18 +18,24 @@ CONFUSION = 2
 TP_PURPLE = 3
 TP_RED = 4
 TP_GREEN = 5
-START = 6
-GOAL = 7
+TP_LAVENDER = 6
+START = 7
+GOAL = 8
+FIRE_CENTER = 9
 UNKNOWN = 99
 
+TELEPORT_TILES = [TP_PURPLE, TP_RED, TP_GREEN, TP_LAVENDER]
+
 TARGET_COLORS = {
-    FIRE:       (255, 145, 76),
-    CONFUSION:  (255, 222, 89),
-    TP_PURPLE:  (140, 82, 255),
-    TP_RED:     (255, 49, 50),
-    TP_GREEN:   (1, 191, 99),
-    START:      (15, 192, 223),
-    GOAL:       (0, 74, 173),
+    FIRE:       [(255, 145, 76)],
+    CONFUSION:  [(255, 222, 89)],
+    TP_PURPLE:  [(140, 82, 255)],
+    TP_RED:     [(255, 49, 50)],
+    TP_GREEN:   [(1, 191, 99), (42, 193, 126)],
+    TP_LAVENDER:[(226, 169, 241)],
+    START:      [(15, 192, 223)],
+    GOAL:       [(0, 74, 173)],
+    FIRE_CENTER:[(253, 183, 140)],
 }
 
 COLOR_TOL = 45
@@ -155,17 +161,66 @@ def color_distance(c1, c2) -> float:
     return float(np.linalg.norm(c1 - c2))
 
 
+def min_color_distance(rgb_mean: Tuple[float, float, float], target_rgbs: List[Tuple[int, int, int]]) -> float:
+    return min(color_distance(rgb_mean, target_rgb) for target_rgb in target_rgbs)
+
+
 def classify_icon(rgb_mean: Tuple[float, float, float]) -> int:
     best_kind = UNKNOWN
     best_dist = float("inf")
 
-    for kind, target_rgb in TARGET_COLORS.items():
-        dist = color_distance(rgb_mean, target_rgb)
+    for kind, target_rgbs in TARGET_COLORS.items():
+        dist = min_color_distance(rgb_mean, target_rgbs)
         if dist < best_dist:
             best_dist = dist
             best_kind = kind
 
     return best_kind if best_dist <= COLOR_TOL else UNKNOWN
+
+
+def detect_cells_by_color_targets(
+    img_rgb: np.ndarray,
+    step: int,
+    target_rgbs: List[Tuple[int, int, int]],
+    maze_size: int = 64,
+    sample_margin: float = 0.22,
+    min_color_pixels: int = 6,
+) -> Set[Cell]:
+    cells: Set[Cell] = set()
+    h, w, _ = img_rgb.shape
+
+    for r in range(maze_size):
+        y0 = int(r * step + step * sample_margin)
+        y1 = int((r + 1) * step - step * sample_margin)
+        y0 = max(0, min(h - 1, y0))
+        y1 = max(0, min(h - 1, y1))
+        if y1 < y0:
+            continue
+
+        for c in range(maze_size):
+            x0 = int(c * step + step * sample_margin)
+            x1 = int((c + 1) * step - step * sample_margin)
+            x0 = max(0, min(w - 1, x0))
+            x1 = max(0, min(w - 1, x1))
+            if x1 < x0:
+                continue
+
+            patch = img_rgb[y0:y1 + 1, x0:x1 + 1]
+            if patch.size == 0:
+                continue
+
+            maxc = patch.max(axis=2)
+            minc = patch.min(axis=2)
+            sat = maxc - minc
+            color_mask = (sat > 40) & (maxc > 60)
+            if int(color_mask.sum()) < min_color_pixels:
+                continue
+
+            rgb_mean = tuple(np.mean(patch[color_mask], axis=0))
+            if min_color_distance(rgb_mean, target_rgbs) <= COLOR_TOL:
+                cells.add((r, c))
+
+    return cells
 
 
 def detect_colored_icons(img_rgb: np.ndarray, step: int, maze_size: int = 64) -> List[Icon]:
@@ -216,6 +271,24 @@ def build_object_matrix(icons: List[Icon], n: int = 64) -> np.ndarray:
     return obj
 
 
+def overlay_precise_cells(
+    obj_matrix: np.ndarray,
+    img_rgb: np.ndarray,
+    step: int,
+    kinds: List[int],
+    maze_size: int = 64,
+) -> None:
+    """
+    Blob-averaged icon detection can miss a single tile when it touches a nearby
+    colored structure. For teleports and anchor tiles we prefer a direct
+    per-cell color read so those cells stay stable.
+    """
+    for kind in kinds:
+        cells = detect_cells_by_color_targets(img_rgb, step, TARGET_COLORS[kind], maze_size=maze_size)
+        for cell in cells:
+            obj_matrix[cell] = kind
+
+
 def find_single_cell(obj_matrix: np.ndarray, target_value: int, name: str) -> Cell:
     cells = list(zip(*np.where(obj_matrix == target_value)))
     if len(cells) != 1:
@@ -225,7 +298,7 @@ def find_single_cell(obj_matrix: np.ndarray, target_value: int, name: str) -> Ce
 
 def build_teleport_pairs(obj_matrix: np.ndarray) -> Dict[Cell, Cell]:
     teleport_pairs: Dict[Cell, Cell] = {}
-    for tp_kind in [TP_PURPLE, TP_RED, TP_GREEN]:
+    for tp_kind in TELEPORT_TILES:
         cells = list(zip(*np.where(obj_matrix == tp_kind)))
         cells = sorted(cells)
         if len(cells) < 2:
@@ -242,9 +315,14 @@ def build_teleport_pairs(obj_matrix: np.ndarray) -> Dict[Cell, Cell]:
 
 def extract_fire_cells_from_image(path: str, step: int, maze_size: int = 64) -> Set[Cell]:
     img_rgb = load_image_rgb(path)
-    icons = detect_colored_icons(img_rgb, step, maze_size=maze_size)
-    obj = build_object_matrix(icons, n=maze_size)
-    return set(zip(*np.where(obj == FIRE)))
+    fire_cells = detect_cells_by_color_targets(img_rgb, step, TARGET_COLORS[FIRE], maze_size=maze_size)
+    fire_cells |= detect_cells_by_color_targets(img_rgb, step, TARGET_COLORS[FIRE_CENTER], maze_size=maze_size)
+    return fire_cells
+
+
+def extract_fire_center_cells_from_image(path: str, step: int, maze_size: int = 64) -> Set[Cell]:
+    img_rgb = load_image_rgb(path)
+    return detect_cells_by_color_targets(img_rgb, step, TARGET_COLORS[FIRE_CENTER], maze_size=maze_size)
 
 
 def split_fire_components(cells: Set[Cell]) -> List[Set[Cell]]:
@@ -278,8 +356,13 @@ def split_fire_components(cells: Set[Cell]) -> List[Set[Cell]]:
     return components
 
 
-def find_fire_root(component: Set[Cell]) -> Cell:
+def find_fire_root(component: Set[Cell], explicit_roots: Set[Cell] | None = None) -> Cell:
     comp = set(component)
+    if explicit_roots:
+        roots_in_component = sorted(comp & explicit_roots)
+        if roots_in_component:
+            return roots_in_component[0]
+
     candidates = []
 
     for r, c in comp:
@@ -323,9 +406,13 @@ def rotate_component_about_root(component: Set[Cell], root: Cell, quarter_turns:
     return {(r, c) for r, c in out if 0 <= r < n and 0 <= c < n}
 
 
-def build_rotating_fire_phase_sets(base_fire_cells: Set[Cell], n: int) -> List[Set[Cell]]:
+def build_rotating_fire_phase_sets(
+    base_fire_cells: Set[Cell],
+    n: int,
+    fire_center_cells: Set[Cell] | None = None,
+) -> List[Set[Cell]]:
     components = split_fire_components(base_fire_cells)
-    roots = [find_fire_root(comp) for comp in components]
+    roots = [find_fire_root(comp, fire_center_cells) for comp in components]
 
     phases = []
     for k in range(4):
@@ -357,13 +444,21 @@ class MazeEnvironment:
 
         icons = detect_colored_icons(img_rgb, self.step_px, maze_size=maze_size)
         self.obj_matrix = build_object_matrix(icons, n=maze_size)
+        overlay_precise_cells(
+            self.obj_matrix,
+            img_rgb,
+            self.step_px,
+            [CONFUSION, *TELEPORT_TILES, START, GOAL, FIRE_CENTER],
+            maze_size=maze_size,
+        )
+        self.fire_center_cells = set(zip(*np.where(self.obj_matrix == FIRE_CENTER)))
 
         self.start = find_single_cell(self.obj_matrix, START, "start")
         self.goal = find_single_cell(self.obj_matrix, GOAL, "goal")
         self.teleport_pairs = build_teleport_pairs(self.obj_matrix)
 
         base_fire_cells = extract_fire_cells_from_image(image_path, self.step_px, maze_size=maze_size)
-        self.fire_phase_sets = build_rotating_fire_phase_sets(base_fire_cells, maze_size)
+        self.fire_phase_sets = build_rotating_fire_phase_sets(base_fire_cells, maze_size, self.fire_center_cells)
         if not self.fire_phase_sets:
             self.fire_phase_sets = [set()]
 

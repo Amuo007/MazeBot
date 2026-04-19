@@ -10,6 +10,7 @@ import numpy as np
 from environment import (
     EMPTY,
     FIRE,
+    FIRE_CENTER,
     START,
     GOAL,
     UNKNOWN,
@@ -17,6 +18,7 @@ from environment import (
     TP_PURPLE,
     TP_RED,
     TP_GREEN,
+    TP_LAVENDER,
 )
 
 Cell = Tuple[int, int]
@@ -24,10 +26,12 @@ Cell = Tuple[int, int]
 NAME_TO_CHAR = {
     EMPTY: ".",
     FIRE: "F",
+    FIRE_CENTER: "O",
     CONFUSION: "C",
     TP_PURPLE: "P",
     TP_RED: "R",
     TP_GREEN: "G",
+    TP_LAVENDER: "L",
     START: "S",
     GOAL: "E",
     UNKNOWN: "?",
@@ -36,10 +40,12 @@ NAME_TO_CHAR = {
 DISPLAY_COLORS = {
     EMPTY:      np.array([1.00, 1.00, 1.00]),
     FIRE:       np.array([255, 145, 76]) / 255.0,
+    FIRE_CENTER:np.array([253, 183, 140]) / 255.0,
     CONFUSION:  np.array([255, 222, 89]) / 255.0,
     TP_PURPLE:  np.array([140, 82, 255]) / 255.0,
     TP_RED:     np.array([255, 49, 50]) / 255.0,
     TP_GREEN:   np.array([1, 191, 99]) / 255.0,
+    TP_LAVENDER:np.array([226, 169, 241]) / 255.0,
     START:      np.array([15, 192, 223]) / 255.0,
     GOAL:       np.array([0, 74, 173]) / 255.0,
     UNKNOWN:    np.array([0.75, 0.75, 0.75]),
@@ -64,6 +70,16 @@ def format_action(action) -> str:
     return ACTION_LABELS.get(getattr(action, "name", ""), str(action))
 
 
+def get_display_obj_matrix(env, agent):
+    return getattr(agent, "display_obj_matrix", getattr(agent, "obj_matrix", env.obj_matrix))
+
+
+def get_display_walls(env, agent):
+    vertical_walls = getattr(agent, "display_vertical_walls", getattr(agent, "vertical_walls", env.vertical_walls))
+    horizontal_walls = getattr(agent, "display_horizontal_walls", getattr(agent, "horizontal_walls", env.horizontal_walls))
+    return vertical_walls, horizontal_walls
+
+
 def build_display(obj_matrix, env, agent) -> np.ndarray:
     n = obj_matrix.shape[0]
     disp = np.ones((n, n, 3), dtype=float)
@@ -71,7 +87,7 @@ def build_display(obj_matrix, env, agent) -> np.ndarray:
     for r in range(n):
         for c in range(n):
             tile = obj_matrix[r, c]
-            if tile != EMPTY and tile != FIRE:
+            if tile not in (EMPTY, FIRE):
                 disp[r, c] = DISPLAY_COLORS.get(tile, DISPLAY_COLORS[UNKNOWN])
 
     # active fire
@@ -130,7 +146,7 @@ def draw_marker_labels(ax, obj_matrix) -> None:
     for r in range(n):
         for c in range(n):
             tile = obj_matrix[r, c]
-            if tile != EMPTY and tile != FIRE:
+            if tile not in (EMPTY, FIRE, UNKNOWN):
                 ax.text(
                     c + 0.5,
                     r + 0.56,
@@ -173,6 +189,8 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
     fig, ax = plt.subplots(figsize=(10, 10))
     n = env.maze_size
     fig.subplots_adjust(right=0.78)
+    display_obj_matrix = get_display_obj_matrix(env, agent)
+    display_vertical_walls, display_horizontal_walls = get_display_walls(env, agent)
 
     ax.set_xlim(0, n)
     ax.set_ylim(n, 0)
@@ -180,13 +198,13 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
     ax.axis("off")
 
     im = ax.imshow(
-        build_display(env.obj_matrix, env, agent),
+        build_display(display_obj_matrix, env, agent),
         extent=(0, n, n, 0),
         interpolation="nearest"
     )
 
-    draw_static_walls(ax, env.vertical_walls, env.horizontal_walls, n)
-    draw_marker_labels(ax, env.obj_matrix)
+    draw_static_walls(ax, display_vertical_walls, display_horizontal_walls, n)
+    draw_marker_labels(ax, display_obj_matrix)
 
     title = ax.set_title("Turn 0 | Action 0", fontsize=10)
     action_box = ax.text(
@@ -255,7 +273,7 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
         else:
             turn_result = atomic_result
 
-        im.set_data(build_display(env.obj_matrix, env, agent))
+        im.set_data(build_display(get_display_obj_matrix(env, agent), env, agent))
         phase = (env.total_actions_executed // 5) % len(env.fire_phase_sets)
 
         shown_turn = env.turns_taken if turn_finished else env.turns_taken + 1
