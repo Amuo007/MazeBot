@@ -90,6 +90,8 @@ class WorldModel:
     known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
     visit_counts: Dict[Cell, int] = field(default_factory=dict)
     hazard_hit_counts: Dict[Cell, int] = field(default_factory=dict)
+    action_transitions: Dict[Tuple[Cell, int], Cell] = field(default_factory=dict)
+    hazard_cooldown_until: Dict[Cell, int] = field(default_factory=dict)
 
 
 class DQNAgent:
@@ -147,6 +149,8 @@ class DQNAgent:
         self.active_map_key: Optional[str] = None
         self.global_visit_counts: Dict[Cell, int] = {}
         self.hazard_hit_counts: Dict[Cell, int] = {}
+        self.action_transitions: Dict[Tuple[Cell, int], Cell] = {}
+        self.hazard_cooldown_until: Dict[Cell, int] = {}
         self.last_result: Optional[TurnResult] = None
         self.last_action_idx: int = ACTION_TO_INDEX[Action.WAIT]
         self.pending_prev_pos: Optional[Cell] = None
@@ -179,6 +183,8 @@ class DQNAgent:
         self.memory.known_teleports = wm.known_teleports
         self.global_visit_counts = wm.visit_counts
         self.hazard_hit_counts = wm.hazard_hit_counts
+        self.action_transitions = wm.action_transitions
+        self.hazard_cooldown_until = wm.hazard_cooldown_until
 
         self._init_episode_state(env)
 
@@ -248,7 +254,9 @@ class DQNAgent:
     ) -> None:
         action = ACTIONS[action_idx]
         effective_action = env.apply_confusion(action) if pre_step_confused else action
+        effective_action_idx = ACTION_TO_INDEX[effective_action]
         target = env.action_to_target(prev_pos, effective_action)
+        current_step = int(env.total_actions_executed)
 
         if self._is_move_action(effective_action):
             if result.wall_hits > 0 and result.current_position == prev_pos:
@@ -260,32 +268,63 @@ class DQNAgent:
 
             if result.is_dead and not result.teleported and env.in_bounds(target):
                 self.hazard_hit_counts[target] = self.hazard_hit_counts.get(target, 0) + 1
-                # Require repeated evidence to avoid overfitting one-off dynamic hazard hits.
-                if self.hazard_hit_counts[target] >= 2:
-                    self.memory.known_hazards.add(target)
+                self.memory.known_hazards.add(target)
+                # Fire/hazard is dynamic. Avoid it for a short horizon, then allow replanning through it.
+                self.hazard_cooldown_until[target] = max(
+                    self.hazard_cooldown_until.get(target, 0),
+                    current_step + 10,
+                )
+                self.action_transitions.pop((prev_pos, effective_action_idx), None)
+            elif result.wall_hits == 0 and not result.is_dead:
+                self.action_transitions[(prev_pos, effective_action_idx)] = result.current_position
+
+                # If stepping succeeds through a previously marked hazard cell, clear temporary block.
+                if target in self.memory.known_hazards:
+                    self.hazard_cooldown_until[target] = min(
+                        self.hazard_cooldown_until.get(target, 0),
+                        current_step,
+                    )
+
+    def _is_hazard_blocked_now(self, cell: Cell, env: MazeEnvironment) -> bool:
+        cutoff = self.hazard_cooldown_until.get(cell, 0)
+        return int(env.total_actions_executed) < cutoff
+
+    def _predicted_next_cell(self, env: MazeEnvironment, cell: Cell, action: Action) -> Optional[Cell]:
+        if not self._is_move_action(action):
+            return cell
+
+        target = env.action_to_target(cell, action)
+        if not env.in_bounds(target):
+            return None
+
+        if self._edge_key(cell, target) in self.memory.known_walls:
+            return None
+
+        transition_key = (cell, ACTION_TO_INDEX[action])
+        return self.action_transitions.get(transition_key, target)
+
+    def _find_action_to_next(self, env: MazeEnvironment, cell: Cell, next_cell: Cell) -> Optional[Action]:
+        for action in (Action.MOVE_UP, Action.MOVE_DOWN, Action.MOVE_LEFT, Action.MOVE_RIGHT):
+            predicted = self._predicted_next_cell(env, cell, action)
+            if predicted == next_cell:
+                return action
+        return None
 
     def _neighbors_for_astar(self, env: MazeEnvironment, cell: Cell) -> List[Cell]:
-        r, c = cell
         out: List[Cell] = []
+        seen: Set[Cell] = set()
 
-        for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
-            if not env.in_bounds(nb):
-                continue
-            if self._edge_key(cell, nb) in self.memory.known_walls:
-                continue
-
-            # Keep planner edges local (adjacent cells only). Teleport effects are applied
-            # by the environment after stepping onto the teleporter tile.
-            if nb in self.memory.known_hazards:
+        for action in (Action.MOVE_UP, Action.MOVE_DOWN, Action.MOVE_LEFT, Action.MOVE_RIGHT):
+            predicted = self._predicted_next_cell(env, cell, action)
+            if predicted is None:
                 continue
 
-            # If this adjacent tile is a known teleporter whose destination is hazardous,
-            # avoid stepping onto it.
-            tele_dest = self.memory.known_teleports.get(nb)
-            if tele_dest is not None and tele_dest in self.memory.known_hazards:
+            if predicted in self.memory.known_hazards and self._is_hazard_blocked_now(predicted, env):
                 continue
 
-            out.append(nb)
+            if predicted not in seen:
+                seen.add(predicted)
+                out.append(predicted)
 
         return out
 
@@ -320,10 +359,12 @@ class DQNAgent:
         if len(path) < 2:
             return None
 
-        desired_idx = self._delta_to_action_idx(path[0], path[1])
-        desired_action = ACTIONS[desired_idx]
+        desired_action = self._find_action_to_next(env, path[0], path[1])
+        if desired_action is None:
+            return None
+
         if not pre_step_confused:
-            return desired_idx
+            return ACTION_TO_INDEX[desired_action]
 
         command_action = env.apply_confusion(desired_action)
         return ACTION_TO_INDEX[command_action]
@@ -735,6 +776,8 @@ class DQNAgent:
                         known_teleports=dict(raw_model.get("known_teleports", {})),
                         visit_counts=dict(raw_model.get("visit_counts", {})),
                         hazard_hit_counts=dict(raw_model.get("hazard_hit_counts", {})),
+                        action_transitions=dict(raw_model.get("action_transitions", {})),
+                        hazard_cooldown_until=dict(raw_model.get("hazard_cooldown_until", {})),
                     )
 
             agent.world_models = normalized
