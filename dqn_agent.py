@@ -83,6 +83,15 @@ class AgentMemory:
     known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
 
 
+@dataclass
+class WorldModel:
+    known_walls: Set[Tuple[Cell, Cell]] = field(default_factory=set)
+    known_hazards: Set[Cell] = field(default_factory=set)
+    known_teleports: Dict[Cell, Cell] = field(default_factory=dict)
+    visit_counts: Dict[Cell, int] = field(default_factory=dict)
+    hazard_hit_counts: Dict[Cell, int] = field(default_factory=dict)
+
+
 class DQNAgent:
     """
     DQN agent that supports:
@@ -134,6 +143,8 @@ class DQNAgent:
 
         self.training_steps = 0
         self.memory = AgentMemory()
+        self.world_models: Dict[str, WorldModel] = {}
+        self.active_map_key: Optional[str] = None
         self.global_visit_counts: Dict[Cell, int] = {}
         self.hazard_hit_counts: Dict[Cell, int] = {}
         self.last_result: Optional[TurnResult] = None
@@ -148,10 +159,27 @@ class DQNAgent:
         self.last_search_closed: Set[Cell] = set()
 
         if self.env is not None:
-            self._init_episode_state(self.env)
+            self.bind_environment(self.env)
+
+    def _build_map_key(self, env: MazeEnvironment) -> str:
+        image_path = getattr(env, "image_path", "")
+        if isinstance(image_path, str) and image_path:
+            return str(Path(image_path).resolve())
+        return f"maze_size_{env.maze_size}"
 
     def bind_environment(self, env: MazeEnvironment) -> None:
         self.env = env
+        self.active_map_key = self._build_map_key(env)
+        if self.active_map_key not in self.world_models:
+            self.world_models[self.active_map_key] = WorldModel()
+
+        wm = self.world_models[self.active_map_key]
+        self.memory.known_walls = wm.known_walls
+        self.memory.known_hazards = wm.known_hazards
+        self.memory.known_teleports = wm.known_teleports
+        self.global_visit_counts = wm.visit_counts
+        self.hazard_hit_counts = wm.hazard_hit_counts
+
         self._init_episode_state(env)
 
     def reset_episode(self) -> None:
@@ -245,9 +273,12 @@ class DQNAgent:
                 continue
             if self._edge_key(cell, nb) in self.memory.known_walls:
                 continue
-            if nb in self.memory.known_hazards:
+
+            mapped = self.memory.known_teleports.get(nb, nb)
+            if mapped in self.memory.known_hazards:
                 continue
-            out.append(nb)
+
+            out.append(mapped)
 
         return out
 
@@ -631,10 +662,12 @@ class DQNAgent:
                 "epsilon_start": self.epsilon_start,
                 "epsilon_end": self.epsilon_end,
                 "epsilon_decay_steps": self.epsilon_decay_steps,
+                "astar_follow_prob": self.astar_follow_prob,
                 "min_replay_size": self.min_replay_size,
                 "replay_capacity": self.replay_buffer.capacity,
                 "map_paths": list(map_paths or []),
                 "input_dim": self.input_dim,
+                "world_models": self.world_models,
             },
             str(target),
         )
@@ -646,7 +679,14 @@ class DQNAgent:
         env: Optional[MazeEnvironment] = None,
         device: Optional[str] = None,
     ) -> "DQNAgent":
-        checkpoint = torch.load(checkpoint_path, map_location=device or "cpu")
+        try:
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=device or "cpu",
+                weights_only=False,
+            )
+        except TypeError:
+            checkpoint = torch.load(checkpoint_path, map_location=device or "cpu")
         agent = cls(
             env=env,
             gamma=float(checkpoint.get("gamma", 0.99)),
@@ -658,6 +698,7 @@ class DQNAgent:
             epsilon_start=float(checkpoint.get("epsilon_start", 1.0)),
             epsilon_end=float(checkpoint.get("epsilon_end", 0.05)),
             epsilon_decay_steps=int(checkpoint.get("epsilon_decay_steps", 75_000)),
+            astar_follow_prob=float(checkpoint.get("astar_follow_prob", 0.80)),
             device=device,
         )
 
@@ -671,6 +712,29 @@ class DQNAgent:
             agent.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         agent.training_steps = int(checkpoint.get("training_steps", 0))
+
+        loaded_world_models = checkpoint.get("world_models")
+        if isinstance(loaded_world_models, dict):
+            normalized: Dict[str, WorldModel] = {}
+            for map_key, raw_model in loaded_world_models.items():
+                if isinstance(raw_model, WorldModel):
+                    normalized[str(map_key)] = raw_model
+                    continue
+
+                if isinstance(raw_model, dict):
+                    normalized[str(map_key)] = WorldModel(
+                        known_walls=set(raw_model.get("known_walls", set())),
+                        known_hazards=set(raw_model.get("known_hazards", set())),
+                        known_teleports=dict(raw_model.get("known_teleports", {})),
+                        visit_counts=dict(raw_model.get("visit_counts", {})),
+                        hazard_hit_counts=dict(raw_model.get("hazard_hit_counts", {})),
+                    )
+
+            agent.world_models = normalized
+
+        if env is not None:
+            agent.bind_environment(env)
+
         return agent
 
 
