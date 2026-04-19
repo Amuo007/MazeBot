@@ -274,11 +274,18 @@ class DQNAgent:
             if self._edge_key(cell, nb) in self.memory.known_walls:
                 continue
 
-            mapped = self.memory.known_teleports.get(nb, nb)
-            if mapped in self.memory.known_hazards:
+            # Keep planner edges local (adjacent cells only). Teleport effects are applied
+            # by the environment after stepping onto the teleporter tile.
+            if nb in self.memory.known_hazards:
                 continue
 
-            out.append(mapped)
+            # If this adjacent tile is a known teleporter whose destination is hazardous,
+            # avoid stepping onto it.
+            tele_dest = self.memory.known_teleports.get(nb)
+            if tele_dest is not None and tele_dest in self.memory.known_hazards:
+                continue
+
+            out.append(nb)
 
         return out
 
