@@ -17,6 +17,7 @@ from .image_parsing import (
     overlay_precise_cells,
 )
 from .models import (
+    ACTIONS_PER_TURN,
     CONFUSION,
     FIRE_CENTER,
     GOAL,
@@ -89,11 +90,11 @@ class MazeEnvironment:
         return self.start
 
     def get_active_fire_cells(self) -> Set[Cell]:
-        phase = (self.total_actions_executed // 5) % len(self.fire_phase_sets)
+        phase = (self.total_actions_executed // ACTIONS_PER_TURN) % len(self.fire_phase_sets)
         return self.fire_phase_sets[phase]
 
     def get_fire_phase(self) -> int:
-        return (self.total_actions_executed // 5) % len(self.fire_phase_sets)
+        return (self.total_actions_executed // ACTIONS_PER_TURN) % len(self.fire_phase_sets)
 
     def in_bounds(self, cell: Cell) -> bool:
         row, col = cell
@@ -175,7 +176,8 @@ class MazeEnvironment:
     def step_one_action(self, action: Action, turn_confused: bool) -> TurnResult:
         result = TurnResult(current_position=self.position)
 
-        effective_action = self.apply_confusion(action) if turn_confused else action
+        current_turn_confused = turn_confused or self.confused_this_turn
+        effective_action = self.apply_confusion(action) if current_turn_confused else action
         target = self.action_to_target(self.position, effective_action)
 
         if effective_action != Action.WAIT and not self.can_move(self.position, target):
@@ -183,7 +185,7 @@ class MazeEnvironment:
             result.actions_executed = 1
             self.total_actions_executed += 1
             result.current_position = self.position
-            result.is_confused = self.confused_this_turn
+            result.is_confused = current_turn_confused
             return result
 
         self.position = target
@@ -194,7 +196,7 @@ class MazeEnvironment:
         self.unique_cells.add(self.position)
 
         self._apply_tile_effects(result)
-        result.is_confused = turn_confused or self.confused_this_turn
+        result.is_confused = current_turn_confused or self.confused_this_turn
         return result
 
     def finish_turn(self, result: TurnResult) -> TurnResult:
@@ -207,16 +209,18 @@ class MazeEnvironment:
         if self.confused_turns_remaining > 0:
             self.confused_turns_remaining -= 1
 
+        self.confused_this_turn = False
+
         return result
 
     def step(self, actions: List[Action]) -> TurnResult:
-        if not (1 <= len(actions) <= 5):
-            raise ValueError("actions must contain between 1 and 5 actions")
+        if not (1 <= len(actions) <= ACTIONS_PER_TURN):
+            raise ValueError(f"actions must contain between 1 and {ACTIONS_PER_TURN} actions")
 
         final_result = TurnResult(current_position=self.position)
 
         turn_confused = self.confused_turns_remaining > 0
-        self.confused_this_turn = False
+        self.confused_this_turn = turn_confused
 
         for action in actions:
             atomic_result = self.step_one_action(action, turn_confused)

@@ -90,6 +90,8 @@ def main() -> None:
     loaded = qlearner.load(QTABLE_PATH)
     if loaded:
         print("[run_RL.py] Loaded existing Q-table — skipping training.", flush=True)
+    else:
+        print("[run_RL.py] No compatible Q-table found — training a new table.", flush=True)
 
     agent = build_agent(env, qlearner)
 

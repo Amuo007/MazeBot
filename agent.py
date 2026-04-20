@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
 
 from astar import astar_search
-from environment import Action, TurnResult
+from environment import ACTIONS_PER_TURN, Action, TurnResult
 from qlearning import MetaAction, QLearner, State
 
 Cell = Tuple[int, int]
@@ -171,11 +171,59 @@ class MazeAgent:
 
         return base_action
 
+    @staticmethod
+    def _action_to_target(position: Cell, action: Action) -> Cell:
+        row, col = position
+        if action == Action.MOVE_UP:
+            return (row - 1, col)
+        if action == Action.MOVE_DOWN:
+            return (row + 1, col)
+        if action == Action.MOVE_LEFT:
+            return (row, col - 1)
+        if action == Action.MOVE_RIGHT:
+            return (row, col + 1)
+        return position
+
+    def _simulate_transition(self, position: Cell, action: Action) -> Cell:
+        if action == Action.WAIT:
+            return position
+
+        target = self._action_to_target(position, action)
+        if not self.can_move(position, target):
+            return position
+        return self.teleport_pairs.get(target, target)
+
+    def _build_follow_astar_actions(self, steps: int = ACTIONS_PER_TURN) -> List[Action]:
+        actions: List[Action] = []
+        saved_pos = self.current_pos
+        saved_path = list(self.current_path)
+
+        try:
+            for _ in range(steps):
+                if self.current_pos == self.goal:
+                    actions.append(Action.WAIT)
+                    continue
+
+                if not self.current_path or self.current_pos not in self.current_path:
+                    self._replan()
+                else:
+                    self._advance_path()
+
+                suggestion = self.astar_suggestion()
+                next_action = suggestion if suggestion is not None else Action.WAIT
+                actions.append(next_action)
+                self.current_pos = self._simulate_transition(self.current_pos, next_action)
+
+            return actions
+        finally:
+            self.current_pos = saved_pos
+            self.current_path = saved_path
+
     def plan_turn(self, last_result: Optional[TurnResult]) -> List[Action]:
         self.update_from_result(last_result)
 
         if self.current_pos == self.goal:
-            return [Action.WAIT]
+            return [Action.WAIT] * ACTIONS_PER_TURN
 
         current_state = self.get_state()
 
@@ -208,7 +256,13 @@ class MazeAgent:
             )
 
         chosen_meta_action = self.qlearner.select_action(current_state)
-        primitive_action = self.choose_primitive_action(chosen_meta_action)
+        follow_actions = self._build_follow_astar_actions(ACTIONS_PER_TURN)
+        if chosen_meta_action == MetaAction.WAIT:
+            turn_actions = [Action.WAIT] * ACTIONS_PER_TURN
+        elif chosen_meta_action == MetaAction.FOLLOW_ASTAR_INVERTED:
+            turn_actions = [self.controller.invert_action(action) for action in follow_actions]
+        else:
+            turn_actions = follow_actions
 
         self._last_state = current_state
         self._last_meta_action = chosen_meta_action
@@ -217,4 +271,4 @@ class MazeAgent:
         if self.confused_turns_remaining > 0:
             self.confused_turns_remaining -= 1
 
-        return [primitive_action]
+        return turn_actions

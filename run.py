@@ -9,7 +9,7 @@ from qlearning import QLearner, build_default_qlearner
 from route_execution import build_endgame_agent
 from visualizer import animate_episode
 
-IMAGE_PATH = "maze_alpha.png"
+IMAGE_PATH = "maze_beta.png"
 ANIMATION_FRAME_MS = 100
 QTABLE_PATH = "qtable.json"
 
@@ -41,7 +41,10 @@ def run_exploration_phase(image_path: str) -> Tuple[BlindKnowledge, List[Cell]]:
 def load_qlearner(path: str) -> QLearner:
     qlearner = build_default_qlearner()
     if not qlearner.load(path):
-        raise FileNotFoundError(f"Expected an existing RL Q-table at {path}; run.py does not train it.")
+        raise FileNotFoundError(
+            f"Expected a compatible RL Q-table at {path}; run.py does not train it. "
+            "Run run_RL.py to retrain and regenerate qtable.json."
+        )
     print(f"[run.py] Loaded RL Q-table from {path}.", flush=True)
     return qlearner
 

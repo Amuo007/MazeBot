@@ -21,6 +21,7 @@ from .image_parsing import (
     overlay_precise_cells,
 )
 from .models import (
+    ACTIONS_PER_TURN,
     COLOR_TOL,
     CONFUSION,
     EMPTY,
@@ -44,6 +45,7 @@ from .runtime import MazeEnvironment
 
 __all__ = [
     "Action",
+    "ACTIONS_PER_TURN",
     "COLOR_TOL",
     "CONFUSION",
     "Cell",

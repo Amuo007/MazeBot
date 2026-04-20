@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 from ast import literal_eval
 from enum import Enum
 from typing import Dict, List, Tuple
+
+from environment.models import ACTIONS_PER_TURN
 
 State = Tuple[int, int, int, int]
 
@@ -28,7 +31,7 @@ REWARD_GOAL = 100.0
 REWARD_DEATH = -100.0
 REWARD_WALL_HIT = -10.0
 REWARD_FOLLOW_SUCCESS = 2.0
-REWARD_WAIT = -1.0
+REWARD_WAIT = -2.0
 REWARD_STEP_COST = -0.5
 REWARD_NO_PROGRESS = -2.0
 
@@ -39,6 +42,8 @@ DEFAULT_QLEARNER_CONFIG = {
     "epsilon_min": 0.05,
     "epsilon_decay": 0.995,
 }
+
+QTABLE_SCHEMA_VERSION = 2
 
 
 class QLearner:
@@ -57,26 +62,49 @@ class QLearner:
         self.epsilon_decay = epsilon_decay
         self.q_table: Dict[State, list] = {}
 
+    @staticmethod
+    def _canonical_state(state: State) -> State:
+        return tuple(int(value) for value in state)
+
+    @staticmethod
+    def _parse_state_key(key: str) -> State:
+        try:
+            parsed = literal_eval(key)
+        except (SyntaxError, ValueError):
+            # Older checkpoints may serialize keys like "np.int64(7)".
+            key_sanitized = re.sub(r"np\.(?:u?int)\d+\(([-+]?\d+)\)", r"\1", key)
+            parsed = literal_eval(key_sanitized)
+
+        if not isinstance(parsed, (tuple, list)):
+            raise ValueError(f"Invalid state key format: {key}")
+
+        return tuple(int(value) for value in parsed)
+
     def _get_q(self, state: State) -> list:
+        state = self._canonical_state(state)
         if state not in self.q_table:
             self.q_table[state] = [0.0] * len(META_ACTIONS)
         return self.q_table[state]
 
     def _available_actions(self, state: State) -> List[MetaAction]:
+        state = self._canonical_state(state)
         _, _, confused_flag, _ = state
         return ACTIONS_CONFUSED if confused_flag == 1 else ACTIONS_NORMAL
 
     def best_action(self, state: State) -> MetaAction:
+        state = self._canonical_state(state)
         available = self._available_actions(state)
         q_vals = self._get_q(state)
         return max(available, key=lambda action: q_vals[META_ACTIONS.index(action)])
 
     def max_q_value(self, state: State) -> float:
+        state = self._canonical_state(state)
         available = self._available_actions(state)
         q_vals = self._get_q(state)
         return max(q_vals[META_ACTIONS.index(action)] for action in available)
 
     def select_action(self, state: State) -> MetaAction:
+        state = self._canonical_state(state)
         available = self._available_actions(state)
         if random.random() < self.epsilon:
             return random.choice(available)
@@ -89,6 +117,8 @@ class QLearner:
         reward: float,
         next_state: State,
     ) -> None:
+        state = self._canonical_state(state)
+        next_state = self._canonical_state(next_state)
         action_index = META_ACTIONS.index(action)
         q_sa = self._get_q(state)[action_index]
         q_next = self.max_q_value(next_state)
@@ -130,9 +160,20 @@ class QLearner:
         return reward
 
     def save(self, path: str = "qtable.json") -> None:
-        serialisable = {str(key): value for key, value in self.q_table.items()}
+        serialisable = {
+            str(self._canonical_state(key)): value
+            for key, value in self.q_table.items()
+        }
         with open(path, "w", encoding="utf-8") as file:
-            json.dump({"q_table": serialisable, "epsilon": self.epsilon}, file)
+            json.dump(
+                {
+                    "schema_version": QTABLE_SCHEMA_VERSION,
+                    "actions_per_turn": ACTIONS_PER_TURN,
+                    "q_table": serialisable,
+                    "epsilon": self.epsilon,
+                },
+                file,
+            )
         print(f"[Q-learning] Q-table saved → {path} ({len(self.q_table)} states)")
 
     def load(self, path: str = "qtable.json") -> bool:
@@ -140,7 +181,20 @@ class QLearner:
             return False
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
-        self.q_table = {literal_eval(key): value for key, value in data["q_table"].items()}
+
+        schema_version = data.get("schema_version")
+        actions_per_turn = data.get("actions_per_turn")
+        if schema_version != QTABLE_SCHEMA_VERSION or actions_per_turn != ACTIONS_PER_TURN:
+            print(
+                "[Q-learning] Existing Q-table is from an incompatible turn model; "
+                "please retrain to regenerate qtable.json."
+            )
+            return False
+
+        self.q_table = {
+            self._parse_state_key(key): value
+            for key, value in data["q_table"].items()
+        }
         self.epsilon = data.get("epsilon", self.epsilon_min)
         print(f"[Q-learning] Q-table loaded ← {path} ({len(self.q_table)} states)")
         return True

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Tuple
 
 Cell = Tuple[int, int]
+ACTIONS_PER_TURN = 5
 
 EMPTY = 0
 FIRE = 1

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from environment import (
+    ACTIONS_PER_TURN,
     EMPTY,
     FIRE,
     FIRE_CENTER,
@@ -224,7 +225,7 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
             turn_result = atomic_result
 
         im.set_data(build_display(get_display_obj_matrix(env, agent), env, agent))
-        phase = (env.total_actions_executed // 5) % len(env.fire_phase_sets)
+        phase = (env.total_actions_executed // ACTIONS_PER_TURN) % len(env.fire_phase_sets)
 
         shown_turn = env.turns_taken if turn_finished else env.turns_taken + 1
 
@@ -262,7 +263,7 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
     ani_holder["ani"] = animation.FuncAnimation(
         fig,
         update,
-        frames=max_turns * 5,
+        frames=max_turns * ACTIONS_PER_TURN,
         interval=frame_ms,
         blit=False,
         repeat=False,
