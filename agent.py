@@ -5,7 +5,7 @@ from typing import List, Optional, Set, Tuple
 
 from astar import astar_search
 from environment import Action, TurnResult
-from sarsa import QLearner, State, MetaAction
+from qlearning import MetaAction, QLearner, State
 
 Cell = Tuple[int, int]
 
@@ -13,7 +13,6 @@ Cell = Tuple[int, int]
 @dataclass
 class AgentMemory:
     visited: Set[Cell] = field(default_factory=set)
-    known_safe: Set[Cell] = field(default_factory=set)
 
 
 class ActionController:
@@ -76,8 +75,6 @@ class MazeAgent:
         self._last_state: Optional[State] = None
         self._last_meta_action: Optional[MetaAction] = None
         self._last_pos_before_action: Optional[Cell] = None
-
-        # This means "the next turn is still under confusion effect"
         self.confused_turns_remaining = 0
 
     def reset_episode(self) -> None:
@@ -90,9 +87,7 @@ class MazeAgent:
         self.confused_turns_remaining = 0
 
         self.memory.visited.clear()
-        self.memory.known_safe.clear()
         self.memory.visited.add(self.start)
-        self.memory.known_safe.add(self.start)
 
     def in_bounds(self, cell: Cell) -> bool:
         r, c = cell
@@ -128,10 +123,6 @@ class MazeAgent:
         self.current_pos = result.current_position
         self.memory.visited.add(self.current_pos)
 
-        if not result.is_dead:
-            self.memory.known_safe.add(self.current_pos)
-
-        # If stepped on confusion this turn, next turn is still confused.
         if result.is_confused:
             self.confused_turns_remaining = 2
 
@@ -223,7 +214,6 @@ class MazeAgent:
         self._last_meta_action = chosen_meta_action
         self._last_pos_before_action = self.current_pos
 
-        # consume the one-next-turn confusion memory
         if self.confused_turns_remaining > 0:
             self.confused_turns_remaining -= 1
 

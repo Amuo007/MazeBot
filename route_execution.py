@@ -1,22 +1,15 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from agent import MazeAgent
-from blind_explore import BlindKnowledge, build_blind_knowledge, shortest_path_in_discovered
-from environment import Action, MazeEnvironment, START, GOAL, UNKNOWN, TurnResult
-from sarsa import QLearner
-from visualizer import animate_episode
+from environment import Action, GOAL, START, UNKNOWN, MazeEnvironment, TurnResult
+from exploration.knowledge import BlindKnowledge
+from qlearning import QLearner
 
 Cell = Tuple[int, int]
-
-IMAGE_PATH = "maze_beta.png"
-ANIMATION_FRAME_MS = 100
-
-MAX_TURNS_PER_EP = 5000
-QTABLE_PATH = "qtable.json"
 
 
 def discovered_wall_matrices(knowledge: BlindKnowledge) -> Tuple[np.ndarray, np.ndarray]:
@@ -76,7 +69,7 @@ class RouteExecutionAgent(MazeAgent):
     ):
         self.seed_knowledge = seed_knowledge.clone()
         self.fixed_route = list(fixed_route)
-        self.route_index: Dict[Cell, int] = {cell: idx for idx, cell in enumerate(self.fixed_route)}
+        self.route_index: Dict[Cell, int] = {cell: index for index, cell in enumerate(self.fixed_route)}
         self.route_progress_index = 0
         super().__init__(
             start=start,
@@ -92,51 +85,39 @@ class RouteExecutionAgent(MazeAgent):
     def reset_episode(self) -> None:
         super().reset_episode()
         self.memory.visited.update(self.seed_knowledge.visited)
-        self.memory.known_safe.update(self.seed_knowledge.visited)
-        self.memory.known_safe.discard(self.goal)
         self.route_progress_index = 0
         self.current_path = list(self.fixed_route)
 
     def update_from_result(self, result: Optional[TurnResult]) -> None:
         super().update_from_result(result)
-        idx = self.route_index.get(self.current_pos)
-        if idx is not None:
-            self.route_progress_index = max(self.route_progress_index, idx)
+        route_index = self.route_index.get(self.current_pos)
+        if route_index is not None:
+            self.route_progress_index = max(self.route_progress_index, route_index)
 
     def _candidate_steps(self, cell: Cell) -> List[Tuple[Cell, Cell]]:
-        r, c = cell
+        row, col = cell
         candidates: List[Tuple[Cell, Cell]] = []
 
-        for nb in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
-            if not self.can_move(cell, nb):
+        for neighbor in [(row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)]:
+            if not self.can_move(cell, neighbor):
                 continue
-            candidates.append((nb, self.teleport_pairs.get(nb, nb)))
+            candidates.append((neighbor, self.teleport_pairs.get(neighbor, neighbor)))
 
         return candidates
 
-    def neighbors(self, cell: Cell) -> List[Cell]:
-        landings: List[Cell] = []
-        seen: Set[Cell] = set()
-        for _step_cell, landing in self._candidate_steps(cell):
-            if landing in seen:
-                continue
-            seen.add(landing)
-            landings.append(landing)
-        return landings
-
     def _build_route_suffix(self) -> List[Cell]:
-        idx = self.route_index.get(self.current_pos)
-        if idx is not None:
-            self.route_progress_index = max(self.route_progress_index, idx)
-            return self.fixed_route[idx:]
+        route_index = self.route_index.get(self.current_pos)
+        if route_index is not None:
+            self.route_progress_index = max(self.route_progress_index, route_index)
+            return self.fixed_route[route_index:]
 
         best_index: Optional[int] = None
-        for _step_cell, landing in self._candidate_steps(self.current_pos):
-            idx = self.route_index.get(landing)
-            if idx is None or idx < self.route_progress_index:
+        for _, landing in self._candidate_steps(self.current_pos):
+            route_index = self.route_index.get(landing)
+            if route_index is None or route_index < self.route_progress_index:
                 continue
-            if best_index is None or idx < best_index:
-                best_index = idx
+            if best_index is None or route_index < best_index:
+                best_index = route_index
 
         if best_index is None:
             return [self.current_pos]
@@ -151,9 +132,9 @@ class RouteExecutionAgent(MazeAgent):
             return None
 
         target_landing = self.current_path[1]
-        for nb, landing in self._candidate_steps(self.current_pos):
+        for neighbor, landing in self._candidate_steps(self.current_pos):
             if landing == target_landing:
-                return self.controller.delta_to_action(self.current_pos, nb)
+                return self.controller.delta_to_action(self.current_pos, neighbor)
 
         return None
 
@@ -166,6 +147,7 @@ def build_endgame_agent(
 ) -> RouteExecutionAgent:
     vertical_walls, horizontal_walls = discovered_wall_matrices(knowledge)
     obj_matrix = discovered_obj_matrix(knowledge)
+
     agent = RouteExecutionAgent(
         start=env.start,
         goal=env.goal,
@@ -178,67 +160,9 @@ def build_endgame_agent(
         qlearner=qlearner,
         env=env,
     )
+
     display_vertical_walls, display_horizontal_walls = discovered_blocked_wall_matrices(knowledge)
     agent.display_obj_matrix = obj_matrix
     agent.display_vertical_walls = display_vertical_walls
     agent.display_horizontal_walls = display_horizontal_walls
     return agent
-
-
-def main() -> None:
-    preview_env = MazeEnvironment(image_path=IMAGE_PATH, maze_size=64)
-    print(f"Start : {preview_env.start}", flush=True)
-    print(f"Goal  : {preview_env.goal}", flush=True)
-
-    print("\n── Blind exploration phase ──", flush=True)
-    knowledge, exploration_episodes = build_blind_knowledge(IMAGE_PATH)
-    discovered_path = shortest_path_in_discovered(knowledge)
-
-    print(f"Exploration episodes : {exploration_episodes}", flush=True)
-    print(f"Discovered cells     : {len(knowledge.visited)}", flush=True)
-    print(f"Discovered walls     : {len(knowledge.blocked_edges) // 2}", flush=True)
-    print(f"Discovered teleports : {len(knowledge.teleport_pairs) // 2}", flush=True)
-    print(f"Goal seen in map     : {'yes' if knowledge.goal in knowledge.visited else 'no'}", flush=True)
-
-    if not discovered_path:
-        raise RuntimeError("Exploration did not produce a discovered route to the goal.")
-
-    print(f"Discovered path len  : {len(discovered_path) - 1}", flush=True)
-
-    env = MazeEnvironment(
-        image_path=IMAGE_PATH,
-        maze_size=64,
-    )
-
-    qlearner = QLearner(
-        alpha=0.1,
-        gamma=0.95,
-        epsilon=1.0,
-        epsilon_min=0.05,
-        epsilon_decay=0.995,
-    )
-    loaded = qlearner.load(QTABLE_PATH)
-    if not loaded:
-        raise FileNotFoundError(
-            f"Expected an existing RL Q-table at {QTABLE_PATH}; mainv2 no longer trains automatically."
-        )
-
-    print(f"[mainv2] Loaded RL Q-table from {QTABLE_PATH}.", flush=True)
-
-    agent = build_endgame_agent(env, knowledge, discovered_path, qlearner)
-
-    print("\n── RL endgame phase ──", flush=True)
-    print("RL now executes the fixed route discovered during exploration.", flush=True)
-
-    qlearner.epsilon = 0.0
-    env.reset()
-    agent.reset_episode()
-    print("\n── Running final visualised endgame episode ──", flush=True)
-    animate_episode(env, agent, max_turns=10000, frame_ms=ANIMATION_FRAME_MS)
-
-    print("\nEpisode stats:")
-    print(env.get_episode_stats())
-
-
-if __name__ == "__main__":
-    main()

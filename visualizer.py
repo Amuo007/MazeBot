@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from typing import Tuple
-
-import cv2
-import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.pyplot as plt
 import numpy as np
 
 from environment import (
@@ -20,8 +17,6 @@ from environment import (
     TP_GREEN,
     TP_LAVENDER,
 )
-
-Cell = Tuple[int, int]
 
 NAME_TO_CHAR = {
     EMPTY: ".",
@@ -54,8 +49,6 @@ DISPLAY_COLORS = {
 COL_AGENT    = np.array([1.00, 0.15, 0.15])
 COL_VISITED  = np.array([0.60, 0.82, 1.00])
 COL_PATH     = np.array([1.00, 0.95, 0.55])
-COL_SEARCH   = np.array([0.80, 0.92, 1.00])
-COL_CLOSED   = np.array([0.65, 0.82, 0.98])
 
 ACTION_LABELS = {
     "MOVE_UP": "U",
@@ -90,30 +83,15 @@ def build_display(obj_matrix, env, agent) -> np.ndarray:
             if tile not in (EMPTY, FIRE):
                 disp[r, c] = DISPLAY_COLORS.get(tile, DISPLAY_COLORS[UNKNOWN])
 
-    # active fire
     active_fire = env.get_active_fire_cells()
     for r, c in active_fire:
         disp[r, c] = DISPLAY_COLORS[FIRE]
 
-    # searched / expanded nodes
-    if hasattr(agent, "last_search_expanded"):
-        for cell in agent.last_search_expanded:
-            r, c = cell
-            disp[r, c] = disp[r, c] * 0.45 + COL_SEARCH * 0.55
-
-    # closed set
-    if hasattr(agent, "last_search_closed"):
-        for cell in agent.last_search_closed:
-            r, c = cell
-            disp[r, c] = disp[r, c] * 0.55 + COL_CLOSED * 0.45
-
-    # final chosen path
     if hasattr(agent, "current_path") and agent.current_path:
         for cell in agent.current_path[1:]:
             r, c = cell
             disp[r, c] = disp[r, c] * 0.25 + COL_PATH * 0.75
 
-    # visited by agent
     if hasattr(agent, "memory") and hasattr(agent.memory, "visited"):
         for r, c in agent.memory.visited:
             disp[r, c] = disp[r, c] * 0.40 + COL_VISITED * 0.60
@@ -155,34 +133,6 @@ def draw_marker_labels(ax, obj_matrix) -> None:
                     va="center",
                     fontsize=7,
                 )
-
-
-def show_debug_detection(img_rgb, icons) -> None:
-    dbg = img_rgb.copy()
-    for icon in icons:
-        cv2.rectangle(
-            dbg,
-            (icon.x, icon.y),
-            (icon.x + icon.w, icon.y + icon.h),
-            (255, 0, 0),
-            1,
-        )
-        cv2.putText(
-            dbg,
-            NAME_TO_CHAR.get(icon.kind, "?"),
-            (icon.x, max(10, icon.y - 2)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.35,
-            (255, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-
-    plt.figure(figsize=(10, 10))
-    plt.imshow(dbg)
-    plt.title("Detected icons")
-    plt.axis("off")
-    plt.show()
 
 
 def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> None:

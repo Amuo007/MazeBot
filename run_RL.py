@@ -1,10 +1,10 @@
-import sys
 from agent import MazeAgent
 from environment import MazeEnvironment
-from sarsa import QLearner
+from qlearning import QLearner, build_default_qlearner
 from visualizer import animate_episode
 
-IMAGE_PATH = "maze_11.png"
+IMAGE_PATH = "maze_alpha.png"
+MAZE_SIZE = 64
 ANIMATION_FRAME_MS = 100
 
 TRAIN_EPISODES = 500
@@ -14,7 +14,6 @@ VISUALIZE_EVERY = 50
 
 
 def run_visual_episode(env: MazeEnvironment, agent: MazeAgent, ep: int) -> None:
-    """Pause training and show one animated episode."""
     print(f"\n  ── Visual check at episode {ep} ──", flush=True)
     saved_epsilon = agent.qlearner.epsilon
     agent.qlearner.epsilon = 0.0
@@ -25,6 +24,19 @@ def run_visual_episode(env: MazeEnvironment, agent: MazeAgent, ep: int) -> None:
 
     agent.qlearner.epsilon = saved_epsilon
     print(f"  ── Resuming training ──\n", flush=True)
+
+
+def build_agent(env: MazeEnvironment, qlearner: QLearner) -> MazeAgent:
+    return MazeAgent(
+        start=env.start,
+        goal=env.goal,
+        vertical_walls=env.vertical_walls,
+        horizontal_walls=env.horizontal_walls,
+        obj_matrix=env.obj_matrix,
+        teleport_pairs=env.teleport_pairs,
+        qlearner=qlearner,
+        env=env,
+    )
 
 
 def train(env: MazeEnvironment, agent: MazeAgent, episodes: int) -> None:
@@ -67,34 +79,19 @@ def train(env: MazeEnvironment, agent: MazeAgent, episodes: int) -> None:
     print(f"── Q-table saved to {QTABLE_PATH} ──\n", flush=True)
 
 
-def main():
+def main() -> None:
     print("Loading environment...", flush=True)
     env = MazeEnvironment(
         image_path=IMAGE_PATH,
-        maze_size=64,
+        maze_size=MAZE_SIZE,
     )
 
-    qlearner = QLearner(
-        alpha=0.1,
-        gamma=0.95,
-        epsilon=1.0,
-        epsilon_min=0.05,
-        epsilon_decay=0.995,
-    )
+    qlearner = build_default_qlearner()
     loaded = qlearner.load(QTABLE_PATH)
     if loaded:
-        print("[main] Loaded existing Q-table — skipping training.", flush=True)
+        print("[run_RL.py] Loaded existing Q-table — skipping training.", flush=True)
 
-    agent = MazeAgent(
-        start=env.start,
-        goal=env.goal,
-        vertical_walls=env.vertical_walls,
-        horizontal_walls=env.horizontal_walls,
-        obj_matrix=env.obj_matrix,
-        teleport_pairs=env.teleport_pairs,
-        qlearner=qlearner,
-        env=env,
-    )
+    agent = build_agent(env, qlearner)
 
     print(f"Start : {env.start}", flush=True)
     print(f"Goal  : {env.goal}", flush=True)

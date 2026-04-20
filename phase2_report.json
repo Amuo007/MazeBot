@@ -1,0 +1,56 @@
+{
+  "report_type": "phase_2_endgame_evaluation",
+  "phase_scope": "phase_2_only",
+  "generated_at_utc": "2026-04-20T08:20:39.190788+00:00",
+  "maze_image": "maze_alpha.png",
+  "success": true,
+  "terminated_reason": "goal_reached",
+  "turn_limit": 10000,
+  "positions": {
+    "start": [
+      0,
+      31
+    ],
+    "goal": [
+      63,
+      32
+    ],
+    "final": [
+      63,
+      32
+    ]
+  },
+  "raw_counts": {
+    "turns_taken": 270,
+    "total_actions_executed": 270,
+    "actions_planned": 270,
+    "deaths": 0,
+    "wall_hits": 0,
+    "teleports_triggered": 1,
+    "confused_turns": 6,
+    "total_cells_visited_including_duplicates": 271,
+    "unique_cells_visited": 234,
+    "path_length_excluding_teleports": 270
+  },
+  "route_summary": {
+    "discovered_route_length_cells": 233,
+    "route_progress_index": 232,
+    "route_completion_ratio": 0.9957081545064378,
+    "discovered_cells_from_phase_1": 576,
+    "discovered_walls_from_phase_1": 539,
+    "discovered_teleports_from_phase_1": 2
+  },
+  "derived_metrics": {
+    "success_rate": 1.0,
+    "avg_turns": 270.0,
+    "avg_deaths": 0.0,
+    "avg_path_length": 270.0,
+    "death_rate": 0.0,
+    "exploration_efficiency": 0.8634686346863468
+  },
+  "notes": [
+    "This report is generated from the phase 2 endgame execution only.",
+    "Teleport jumps are excluded from path_length_excluding_teleports.",
+    "Five-episode instructor averages are not computed here; this file records the single phase 2 run."
+  ]
+}

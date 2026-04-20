@@ -1,277 +1,403 @@
-# 🧭 Silent Cartographer — Maze Navigation Agent
+# MazeBot
 
-A Python-based maze-solving AI agent that navigates a visually parsed grid maze with dynamic hazards including **fire**, **confusion tiles**, **teleporters**, and **walls**. The agent uses **A\* search** to plan paths and is visualized frame-by-frame using matplotlib animation.
+MazeBot is a maze-solving project built around two related ideas:
 
----
+1. Blind exploration:
+   The system first explores a maze without full certainty about walls, teleports, or fire timing. It builds up its own discovered map over multiple episodes.
+2. RL execution:
+   A Q-learning policy then decides how to act turn by turn while following a route toward the goal, especially around confusion and timing-sensitive situations.
 
-## 📁 Project Structure
+The current project has two main runner files:
 
-```
-silent-cartographer/
-│
-├── main.py            # Entry point — wires environment, agent, and visualizer
-├── agent.py           # MazeAgent logic: planning, memory, action generation
-├── astar.py           # A* search algorithm (with debug info)
-├── environment.py     # Maze parser, tile types, physics, and simulation loop
-├── visualizer.py      # Matplotlib animator for real-time episode playback
-│
-└── maze_5.png         # Primary maze image (defines walls, start, goal, tiles)
-```
+- `run.py`
+  Full two-phase pipeline on `maze_beta.png`.
+  Phase 1 builds blind exploration knowledge.
+  Phase 2 uses the learned Q-table plus the discovered route to run the endgame.
+- `run_RL.py`
+  Pure RL runner on `maze_alpha.png`.
+  It trains a Q-table if one is missing, then runs a final visualized episode.
 
-> 💡 **The maze is defined by one image.** Walls are inferred from dark pixels; colored icons define tile types (fire, teleporters, confusion, start, goal). Fire phases are derived by rotating the detected fire geometry in `environment.py`.
+## How The System Works
 
-PNG image
+### Phase 1: Blind Exploration
 
-## 🗺️ How It Works — Pipeline Overview
+This phase is used in `run.py`.
 
-```
-PNG image(s)
-     │
-     ▼
-[environment.py] ── Image parsing
-     │                ├─ Infer grid step size (pixel gaps between grid lines)
-     │                ├─ Build vertical_walls & horizontal_walls matrices
-     │                └─ Detect colored icons → object matrix
-     │                └─ fire_phase_sets (four rotated phases from the base fire layout)
-     ▼
-MazeEnvironment  ── Holds all ground truth
-     │                ├─ start, goal positions
-     │                ├─ teleport_pairs dict
-     │                └─ fire_phase_sets (one set per image)
-     │
-     ▼
-[agent.py]       ── Decision making each turn
-     │                ├─ Receives TurnResult (position, dead, confused, etc.)
-     │                ├─ Updates AgentMemory (visited, known_safe, etc.)
-     │                └─ Calls A* to plan path → converts to list of Actions
-     │
-     ▼
-[astar.py]       ── Pathfinding
-     │                └─ Returns path + expanded nodes for visualization
-     │
-     ▼
-[visualizer.py]  ── Renders frame-by-frame animation
-                      ├─ Color-codes: agent, path, visited, fire, tiles
-                      └─ Draws walls as line overlays
-```
+The explorer starts with only minimal knowledge:
 
----
+- start cell
+- goal cell
+- cells it has visited
+- walls it has physically bumped into
+- open edges it has successfully crossed
+- teleporter mappings it has personally discovered
+- fire phases that have already killed it
 
-## 📦 Key Files Explained
+Over many exploration episodes, the code keeps and reuses discovered knowledge. The result is a partial but useful map of the maze. Once exploration has found enough of the maze, the project extracts a shortest path through the discovered graph.
 
-### `main.py` — Entry Point
+Important idea:
 
-Bootstraps the full episode:
-1. Creates `MazeEnvironment` from the base image
-2. Creates `MazeAgent` using the environment's parsed data
-3. Calls `animate_episode()` which drives the simulation loop
+- exploration is about building knowledge
+- it is not using the full ground-truth maze for planning
 
-```python
-env = MazeEnvironment(image_path="maze_5.png")
-agent = MazeAgent(start=env.start, goal=env.goal, ...)
-animate_episode(env, agent, max_turns=10000, frame_ms=90)
-```
+### Phase 2: RL Endgame
 
----
+This is also used in `run.py`.
 
-### `environment.py` — World Model + Simulation
+After exploration produces a discovered route, the code builds a route-following agent. That agent uses:
 
-The most complex file. Handles image parsing AND game physics.
+- the discovered maze representation from exploration
+- the fixed route found in the discovered graph
+- a Q-learning policy loaded from `qtable.json`
 
-#### Tile Types (constants)
+The RL policy does not choose arbitrary maze directions directly. Instead, it chooses among higher-level meta actions:
 
-| Constant    | Value | Color (RGB)       | Meaning                        |
-|-------------|-------|-------------------|--------------------------------|
-| `EMPTY`     | 0     | White             | Passable floor                 |
-| `FIRE`      | 1     | Orange `(255,145,76)` | Kills agent on contact     |
-| `CONFUSION` | 2     | Yellow `(255,222,89)` | Reverses controls for 2 turns |
-| `TP_PURPLE` | 3     | Purple `(140,82,255)` | Teleporter (purple pair)   |
-| `TP_RED`    | 4     | Red `(255,49,50)`     | Teleporter (red pair)      |
-| `TP_GREEN`  | 5     | Green `(1,191,99)`    | Teleporter (green pair)    |
-| `START`     | 6     | Cyan `(15,192,223)`   | Agent spawn point          |
-| `GOAL`      | 7     | Blue `(0,74,173)`     | Episode end point          |
-| `UNKNOWN`   | 99    | Gray              | Unrecognized tile              |
+- follow the planned route normally
+- follow the planned route inverted
+- wait
 
-#### Key Functions
+That matters because the maze contains confusion tiles and moving hazards.
 
-| Function | Purpose |
-|---|---|
-| `load_image_rgb(path)` | Loads PNG as RGB numpy array |
-| `infer_grid_step(gray)` | Finds pixel spacing between grid lines |
-| `build_wall_matrices(gray, step, n)` | Returns `vertical_walls[n, n+1]` and `horizontal_walls[n+1, n]` |
-| `detect_colored_icons(img_rgb, step)` | Finds colored blobs → assigns to grid cells |
-| `build_object_matrix(icons, n)` | Creates `n×n` int matrix of tile types |
-| `build_teleport_pairs(obj_matrix)` | Maps each teleporter cell to its partner |
-| `extract_fire_cells_from_image(path)` | Extracts fire tile positions from a phase image |
+### Pure RL Mode
 
-#### `MazeEnvironment` — Simulation Class
+This is what `run_RL.py` does.
 
-| Method | Purpose |
-|---|---|
-| `reset()` | Puts agent back at start, clears stats |
-| `step(actions)` | Executes a list of 1–5 actions, returns `TurnResult` |
-| `step_one_action(action, confused)` | Executes a single action, applies tile effects |
-| `_apply_tile_effects(result)` | Checks fire, confusion, teleport, goal |
-| `apply_confusion(action)` | Reverses direction (UP↔DOWN, LEFT↔RIGHT) |
-| `get_active_fire_cells()` | Returns fire positions for current phase |
-| `get_episode_stats()` | Returns dict of turns, deaths, cells explored, etc. |
+It skips blind exploration and works directly with the full parsed maze. If no Q-table exists, it trains one. If a Q-table already exists, it reuses it and runs the final visualized episode.
 
-#### Fire Phases
+## High-Level Flow
 
-Fire alternates between four rotated phases every 5 actions:
-```
-phase = (total_actions_executed // 5) % len(fire_phase_sets)
-```
-This means fire patterns shift over time, requiring the agent to adapt without needing separate phase images.
+### `run.py`
 
-#### `TurnResult` — What the Agent Receives Back
+1. Parse `maze_beta.png`
+2. Run blind exploration across multiple episodes
+3. Build a discovered route to the goal
+4. Load the existing Q-table from `qtable.json`
+5. Build the endgame route-execution agent
+6. Write the phase 2 JSON report
+7. Visualize the final run
 
-```python
-@dataclass
-class TurnResult:
-    wall_hits: int          # How many walls were bumped this turn
-    current_position: Cell  # (row, col) after the turn
-    is_dead: bool           # Stepped into fire → respawned at start
-    is_confused: bool       # Under confusion effect this turn
-    is_goal_reached: bool   # Reached the goal cell
-    teleported: bool        # Used a teleporter
-    actions_executed: int   # How many actions ran before stop
+### `run_RL.py`
+
+1. Parse `maze_alpha.png`
+2. Load or train a Q-table
+3. Run visual training checks every few episodes
+4. Run a final visualized episode
+
+## File Tree And Responsibilities
+
+```text
+MazeBot/
+├── run.py
+├── run_RL.py
+├── evaluation.py
+├── route_execution.py
+├── agent.py
+├── qlearning.py
+├── astar.py
+├── visualizer.py
+├── qtable.json
+├── phase2_report.json
+├── maze_alpha.png
+├── maze_beta.png
+├── environment/
+│   ├── __init__.py
+│   ├── models.py
+│   ├── image_parsing.py
+│   ├── fire_patterns.py
+│   └── runtime.py
+└── exploration/
+    ├── __init__.py
+    ├── config.py
+    ├── knowledge.py
+    ├── planning.py
+    └── explorer.py
 ```
 
----
+### Top-Level Files
 
-### `agent.py` — Agent Brain
+#### `run.py`
 
-#### `AgentMemory` — What the Agent Remembers
+Main two-phase runner.
 
-```python
-@dataclass
-class AgentMemory:
-    known_walls: Set[Tuple[Cell, Cell]]   # (a, b) wall pairs discovered
-    known_safe: Set[Cell]                 # Cells confirmed non-lethal
-    known_pits: Set[Cell]                 # (future use) dangerous cells
-    known_confusion: Set[Cell]            # Confusion tiles discovered
-    known_teleports: Dict[Cell, Cell]     # Teleporter mappings discovered
-    visited: Set[Cell]                    # All cells ever stepped on
-```
+Responsible for:
 
-> 📝 Currently the agent uses **full maze knowledge** (cheats with ground truth walls/tiles). The `AgentMemory` dataclass is the scaffold for a future **fully blind** agent that learns from exploration.
+- starting blind exploration
+- printing exploration summary stats
+- loading the saved Q-table
+- writing a JSON report for the phase 2 run
+- building the route-execution agent
+- launching the final endgame visualization
 
-#### `ActionController` — Action Helpers
+#### `evaluation.py`
 
-Converts grid deltas to `Action` enum values:
-```python
-ActionController.delta_to_action((r1,c1), (r2,c2)) → Action.MOVE_RIGHT
-```
+Phase 2 evaluation/reporting helper.
 
-#### `MazeAgent` — Core Decision Loop
+Responsible for:
 
-| Method | Purpose |
-|---|---|
-| `reset_episode()` | Clears path, position, and memory for a new run |
-| `plan_turn(last_result)` | Main method — updates state, runs A*, returns actions |
-| `update_from_result(result)` | Applies `TurnResult` to agent's internal position |
-| `plan_path(start, goal)` | Runs A* and stores debug data for visualizer |
-| `path_to_actions(path, limit)` | Converts cell list → up to 5 `Action` values |
-| `can_move(a, b)` | Wall-aware adjacency check |
-| `neighbors(cell)` | Returns passable adjacent cells (used as A* neighbor fn) |
+- running a headless phase 2 endgame episode
+- collecting execution counts like turns, actions, deaths, wall hits, and path length
+- writing `phase2_report.json`
+- keeping evaluation separate from the visual replay
 
----
+#### `run_RL.py`
 
-### `astar.py` — Pathfinding
+Standalone RL runner.
 
-Standard **A\* search** with Manhattan distance heuristic.
+Responsible for:
 
-| Function | Purpose |
-|---|---|
-| `astar_search(start, goal, neighbors_fn)` | Returns the shortest path as `List[Cell]` |
-| `astar_search_debug(...)` | Same, plus returns `expanded_order`, `closed_set`, `g_score` for visualization |
-| `manhattan(a, b)` | Heuristic: `|Δrow| + |Δcol|` |
-| `reconstruct_path(came_from, current)` | Backtracks through parent map to build path |
+- loading or training a Q-table
+- constructing the standard maze agent
+- running periodic visual checks during training
+- running the final visualized episode
 
-The debug version returns:
-```python
-{
-  "path": [...],             # Final chosen path
-  "expanded_order": [...],   # Nodes popped from heap in order
-  "closed_set": {...},       # All nodes fully explored
-  "g_score": {...},          # Best cost found to each cell
-}
-```
+#### `route_execution.py`
 
-This is used by the visualizer to color-code the search frontier.
+Bridge between exploration and RL execution.
 
----
+Responsible for:
 
-### `visualizer.py` — Matplotlib Animator
+- converting discovered blind knowledge into maze matrices
+- building a route-following agent from exploration results
+- overriding replanning so the agent stays aligned with the discovered route
 
-Renders a live frame-by-frame animation of the episode.
+#### `agent.py`
 
-#### Color Legend
+Core RL-controlled maze agent.
 
-| Color | Meaning |
-|---|---|
-| 🔴 Red `(1.0, 0.15, 0.15)` | Agent's current position |
-| 🔵 Light Blue `COL_VISITED` | Cells the agent has visited |
-| 🟡 Yellow `COL_PATH` | Planned path (A* result) |
-| 🩵 Pale Blue `COL_SEARCH` | A* expanded nodes (frontier) |
-| 🟦 Blue-gray `COL_CLOSED` | A* closed set |
-| 🟠 Orange | Active fire tiles |
-| 🟣 Purple / Red / Green | Teleporter pairs |
-| 🟦 Cyan | Start cell |
-| 🔷 Dark Blue | Goal cell |
-| ⬜ White | Empty passable floor |
+Responsible for:
 
-#### Key Functions
+- tracking current position and visited cells
+- asking A* for a route
+- converting a chosen meta action into a primitive environment action
+- updating the Q-table from episode feedback
 
-| Function | Purpose |
-|---|---|
-| `animate_episode(env, agent, ...)` | Main animation loop using `FuncAnimation` |
-| `build_display(obj_matrix, env, agent)` | Builds `n×n×3` RGB float array for imshow |
-| `draw_static_walls(ax, ...)` | Draws wall lines once using matplotlib |
-| `draw_marker_labels(ax, obj_matrix)` | Prints S/E/F/C/P/R/G text on tiles |
+#### `qlearning.py`
 
-The animation executes **one action per frame** (not one turn), so you can watch the agent step cell by cell in real time.
+Q-learning implementation.
 
----
+Responsible for:
 
-## 🧩 Key Terms Glossary
+- defining RL state and meta actions
+- epsilon-greedy action selection
+- temporal-difference updates
+- reward calculation
+- Q-table save/load
 
-| Term | Definition |
-|---|---|
-| **Cell** | A `(row, col)` tuple — the fundamental grid coordinate unit |
-| **Turn** | One planning cycle: agent returns up to 5 actions at once |
-| **Action** | Enum: `MOVE_UP`, `MOVE_DOWN`, `MOVE_LEFT`, `MOVE_RIGHT`, `WAIT` |
-| **Wall matrix** | 2D array marking whether a boundary between cells is blocked |
-| **Fire phase** | Which of the 4 fire-pattern images is currently active (cycles every 5 actions) |
-| **Confusion** | Tile effect that reverses all movement for 2 turns |
-| **Teleporter** | Stepping on one cell instantly moves agent to its paired cell |
-| **TurnResult** | Dataclass returned after each turn with position, death, confusion status, etc. |
-| **AgentMemory** | Dataclass storing everything the agent has learned across steps |
-| **A\*** | Graph search algorithm using `g(n) + h(n)` to find shortest path |
-| **Manhattan distance** | Heuristic `|Δrow| + |Δcol|` — admissible for grid movement |
-| **obj_matrix** | `64×64` int array mapping each cell to its tile type constant |
+#### `astar.py`
 
----
+Generic A* search implementation.
 
-## ▶️ Running the Project
+Responsible for:
+
+- shortest-path search over a neighbor function
+- returning either the basic path or the debug-rich search result
+
+#### `visualizer.py`
+
+Matplotlib animation layer.
+
+Responsible for:
+
+- drawing the maze
+- showing walls, hazards, path, and agent position
+- stepping through the episode one action at a time
+
+#### `qtable.json`
+
+Saved Q-learning table.
+
+Responsible for:
+
+- storing learned Q-values
+- storing the latest epsilon value that was saved
+
+### `environment/` Package
+
+This package contains the full environment implementation and was split so the old monolithic environment logic is easier to understand.
+
+#### `environment/models.py`
+
+Shared environment definitions.
+
+Responsible for:
+
+- tile constants
+- action enum
+- turn-result dataclass
+- icon dataclass
+- color tables
+
+#### `environment/image_parsing.py`
+
+Maze parsing from image files.
+
+Responsible for:
+
+- loading images
+- inferring the grid
+- detecting walls
+- detecting colored icons
+- building object matrices
+- building teleporter pairs
+
+#### `environment/fire_patterns.py`
+
+Fire-shape processing.
+
+Responsible for:
+
+- extracting fire cells from the maze image
+- separating fire into connected components
+- estimating fire roots
+- rotating fire components into phase sets
+
+#### `environment/runtime.py`
+
+Actual runtime environment.
+
+Responsible for:
+
+- holding parsed maze state
+- resetting episodes
+- applying movement rules
+- applying confusion
+- applying teleport effects
+- applying fire deaths
+- stepping 1 to 5 actions per turn
+
+#### `environment/__init__.py`
+
+Package export layer.
+
+Responsible for:
+
+- re-exporting the commonly used environment symbols so other files can keep importing from `environment`
+
+### `exploration/` Package
+
+This package contains the blind exploration phase used by `run.py`.
+
+#### `exploration/config.py`
+
+Exploration-only constants.
+
+Responsible for:
+
+- maze size
+- fire timing constants
+- training budgets
+- logging cadence
+- early-stop thresholds
+
+#### `exploration/knowledge.py`
+
+Explorer memory model.
+
+Responsible for:
+
+- storing visited cells
+- storing discovered open and blocked edges
+- storing discovered teleports
+- storing known dangerous fire phases
+- providing helper functions for adjacency and fire timing
+
+#### `exploration/planning.py`
+
+Exploration planning logic.
+
+Responsible for:
+
+- greedy frontier probe selection
+- shortest path through the discovered graph
+- timed planning that accounts for fire phases
+
+#### `exploration/explorer.py`
+
+Blind exploration engine.
+
+Responsible for:
+
+- physically stepping through the environment
+- updating discovered knowledge after each move
+- handling deaths, teleports, waits, and wall bumps
+- running repeated exploration episodes
+- returning the best accumulated knowledge
+
+#### `exploration/__init__.py`
+
+Small export layer.
+
+Responsible for:
+
+- exposing the specific exploration pieces used by `run.py`
+
+## Important Maze Concepts
+
+### Walls
+
+Walls are inferred from dark grid lines in the source image and stored as vertical and horizontal wall matrices.
+
+### Confusion
+
+Confusion reverses directional controls for a short time. This is why the RL policy has both:
+
+- normal follow action
+- inverted follow action
+
+### Teleporters
+
+Colored teleporter cells are paired together. Entering one instantly changes the agent’s position.
+
+### Fire
+
+Fire is dynamic. The environment constructs phase sets by rotating detected fire geometry, then advances those phases over time.
+
+## How To Run
+
+### Run The Full Two-Phase Pipeline
 
 ```bash
-# Install dependencies
-pip install numpy opencv-python matplotlib
-
-# Run the visualized episode
-python main.py
+python3 run.py
 ```
 
-Make sure `maze_5.png` is in the same directory as `main.py`.
+Notes:
 
----
+- uses `maze_beta.png`
+- first performs blind exploration
+- loads `qtable.json`
+- then performs RL-guided route execution
 
-## 🔭 Future Work
+### Run The Pure RL Pipeline
 
-- **Blind exploration mode**: Remove ground-truth wall access; agent discovers walls by bumping into them and stores them in `AgentMemory.known_walls`
-- **Fire avoidance**: Route around known fire cells rather than treating them as passable
-- **Teleporter learning**: Discover and remember teleport destinations from `TurnResult.teleported`
-- **Confusion handling**: Invert planned actions when `is_confused=True` in last result
-- **Frontier exploration**: When no known path exists, explore toward unvisited cells first
+```bash
+python3 run_RL.py
+```
+
+Notes:
+
+- uses `maze_alpha.png`
+- trains a Q-table if one does not already exist
+- then runs a final visualized episode
+
+## Dependencies
+
+The code currently relies on:
+
+- `numpy`
+- `matplotlib`
+- `opencv-python` or another Python package that provides `cv2`
+
+If `cv2` is missing, the environment package cannot load maze images.
+
+## Summary
+
+The project is organized around two layers of intelligence:
+
+- exploration discovers a usable map
+- RL decides how to execute safely and robustly inside the maze dynamics
+
+`run.py` combines both phases.
+`run_RL.py` is the direct RL-only path.
+
+## AI USE 
+- chatgpt for brainstorming ideas and different approaches and Syntax
