@@ -1,8 +1,8 @@
 {
   "report_type": "phase_2_endgame_evaluation",
   "phase_scope": "phase_2_only",
-  "generated_at_utc": "2026-04-20T20:24:03.453776+00:00",
-  "maze_image": "maze_beta.png",
+  "generated_at_utc": "2026-04-20T22:02:20.779406+00:00",
+  "maze_image": "maze_gamma_imp.png",
   "success": true,
   "terminated_reason": "goal_reached",
   "turn_limit": 10000,
@@ -21,32 +21,32 @@
     ]
   },
   "raw_counts": {
-    "turns_taken": 303,
-    "total_actions_executed": 1485,
-    "actions_planned": 1515,
-    "deaths": 15,
-    "wall_hits": 0,
-    "teleports_triggered": 0,
-    "confused_turns": 0,
-    "total_cells_visited_including_duplicates": 1486,
-    "unique_cells_visited": 379,
-    "path_length_excluding_teleports": 1485
+    "turns_taken": 2370,
+    "total_actions_executed": 11783,
+    "actions_planned": 11850,
+    "deaths": 33,
+    "wall_hits": 224,
+    "teleports_triggered": 29,
+    "confused_turns": 153,
+    "total_cells_visited_including_duplicates": 11560,
+    "unique_cells_visited": 362,
+    "path_length_excluding_teleports": 11559
   },
   "route_summary": {
-    "discovered_route_length_cells": 378,
-    "route_progress_index": 375,
-    "route_completion_ratio": 0.9920634920634921,
-    "discovered_cells_from_phase_1": 1236,
-    "discovered_walls_from_phase_1": 1436,
-    "discovered_teleports_from_phase_1": 0
+    "discovered_route_length_cells": 361,
+    "route_progress_index": 359,
+    "route_completion_ratio": 0.9944598337950139,
+    "discovered_cells_from_phase_1": 775,
+    "discovered_walls_from_phase_1": 901,
+    "discovered_teleports_from_phase_1": 1
   },
   "derived_metrics": {
     "success_rate": 1.0,
-    "avg_turns": 303.0,
-    "avg_deaths": 15.0,
-    "avg_path_length": 1485.0,
-    "death_rate": 0.04950495049504951,
-    "exploration_efficiency": 0.2550471063257066
+    "avg_turns": 2370.0,
+    "avg_deaths": 33.0,
+    "avg_path_length": 11559.0,
+    "death_rate": 0.013924050632911392,
+    "exploration_efficiency": 0.031314878892733565
   },
   "notes": [
     "This report is generated from the phase 2 endgame execution only.",

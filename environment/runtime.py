@@ -10,6 +10,7 @@ from .image_parsing import (
     build_object_matrix,
     build_teleport_pairs,
     build_wall_matrices,
+    detect_one_way_gates,
     detect_colored_icons,
     find_single_cell,
     infer_grid_step,
@@ -21,6 +22,7 @@ from .models import (
     CONFUSION,
     FIRE_CENTER,
     GOAL,
+    ONE_WAY_GATE,
     START,
     TELEPORT_TILES,
     Action,
@@ -53,6 +55,9 @@ class MazeEnvironment:
             [CONFUSION, *TELEPORT_TILES, START, GOAL, FIRE_CENTER],
             maze_size=maze_size,
         )
+        self.one_way_gates = detect_one_way_gates(img_rgb, self.step_px, maze_size=maze_size)
+        for gate_cell in self.one_way_gates:
+            self.obj_matrix[gate_cell] = ONE_WAY_GATE
         self.fire_center_cells = set(zip(*np.where(self.obj_matrix == FIRE_CENTER)))
 
         self.start = find_single_cell(self.obj_matrix, START, "start")
@@ -105,6 +110,14 @@ class MazeEnvironment:
         b_row, b_col = b
 
         if not self.in_bounds(b):
+            return False
+
+        gate_exit = self.one_way_gates.get(a)
+        if gate_exit is not None and b != gate_exit:
+            return False
+
+        target_gate_exit = self.one_way_gates.get(b)
+        if target_gate_exit is not None and target_gate_exit == a:
             return False
 
         if b_row == a_row - 1 and b_col == a_col:

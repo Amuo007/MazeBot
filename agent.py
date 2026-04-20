@@ -52,6 +52,7 @@ class MazeAgent:
         horizontal_walls,
         obj_matrix,
         teleport_pairs,
+        one_way_gates: Optional[dict] = None,
         qlearner: Optional[QLearner] = None,
         env=None,
     ):
@@ -61,6 +62,7 @@ class MazeAgent:
         self.horizontal_walls = horizontal_walls
         self.obj_matrix = obj_matrix
         self.teleport_pairs = teleport_pairs
+        self.one_way_gates = dict(one_way_gates) if one_way_gates is not None else {}
         self.env = env
 
         self.rows, self.cols = obj_matrix.shape
@@ -98,6 +100,15 @@ class MazeAgent:
         br, bc = b
         if not self.in_bounds(b):
             return False
+
+        gate_exit = self.one_way_gates.get(a)
+        if gate_exit is not None and b != gate_exit:
+            return False
+
+        target_gate_exit = self.one_way_gates.get(b)
+        if target_gate_exit is not None and target_gate_exit == a:
+            return False
+
         if br == ar - 1 and bc == ac:
             return self.horizontal_walls[ar, ac] == 0
         if br == ar + 1 and bc == ac:

@@ -34,6 +34,7 @@ def build_agent(env: MazeEnvironment, qlearner: QLearner) -> MazeAgent:
         horizontal_walls=env.horizontal_walls,
         obj_matrix=env.obj_matrix,
         teleport_pairs=env.teleport_pairs,
+        one_way_gates=env.one_way_gates,
         qlearner=qlearner,
         env=env,
     )

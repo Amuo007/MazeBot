@@ -78,6 +78,7 @@ class RouteExecutionAgent(MazeAgent):
             horizontal_walls=horizontal_walls,
             obj_matrix=obj_matrix,
             teleport_pairs=teleport_pairs,
+            one_way_gates=getattr(env, "one_way_gates", None),
             qlearner=qlearner,
             env=env,
         )

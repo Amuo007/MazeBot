@@ -5,7 +5,7 @@ from typing import Dict, List, Set, Tuple
 import cv2
 import numpy as np
 
-from .models import COLOR_TOL, TELEPORT_TILES, TARGET_COLORS, Cell, Icon, UNKNOWN
+from .models import COLOR_TOL, GATE_BASE_COLORS, TELEPORT_TILES, TARGET_COLORS, TP_RED, Cell, Icon, UNKNOWN
 
 
 def load_image_rgb(path: str) -> np.ndarray:
@@ -91,6 +91,77 @@ def color_distance(c1, c2) -> float:
 
 def min_color_distance(rgb_mean: Tuple[float, float, float], target_rgbs: List[Tuple[int, int, int]]) -> float:
     return min(color_distance(rgb_mean, target_rgb) for target_rgb in target_rgbs)
+
+
+def _pixel_mask_for_targets(
+    patch_rgb: np.ndarray,
+    target_rgbs: List[Tuple[int, int, int]],
+    tolerance: float,
+) -> np.ndarray:
+    patch = patch_rgb.astype(np.float32)
+    target_array = np.array(target_rgbs, dtype=np.float32)
+    # Compute the closest distance from each pixel to any target color.
+    diffs = patch[:, :, None, :] - target_array[None, None, :, :]
+    distances = np.linalg.norm(diffs, axis=3)
+    min_distance = distances.min(axis=2)
+    return min_distance <= tolerance
+
+
+def detect_one_way_gates(
+    img_rgb: np.ndarray,
+    step: int,
+    maze_size: int = 64,
+    sample_margin: float = 0.16,
+) -> Dict[Cell, Cell]:
+    gates: Dict[Cell, Cell] = {}
+    height, width, _ = img_rgb.shape
+
+    for row in range(maze_size):
+        y0 = int(row * step + step * sample_margin)
+        y1 = int((row + 1) * step - step * sample_margin)
+        y0 = max(0, min(height - 1, y0))
+        y1 = max(0, min(height - 1, y1))
+        if y1 < y0:
+            continue
+
+        for col in range(maze_size):
+            x0 = int(col * step + step * sample_margin)
+            x1 = int((col + 1) * step - step * sample_margin)
+            x0 = max(0, min(width - 1, x0))
+            x1 = max(0, min(width - 1, x1))
+            if x1 < x0:
+                continue
+
+            patch = img_rgb[y0:y1 + 1, x0:x1 + 1]
+            if patch.size == 0:
+                continue
+
+            base_mask = _pixel_mask_for_targets(patch, GATE_BASE_COLORS, tolerance=70.0)
+            red_mask = _pixel_mask_for_targets(patch, TARGET_COLORS[TP_RED], tolerance=70.0)
+
+            area = patch.shape[0] * patch.shape[1]
+            if int(base_mask.sum()) < max(8, int(area * 0.10)):
+                continue
+            if int(red_mask.sum()) < max(4, int(area * 0.02)):
+                continue
+
+            red_coords = np.argwhere(red_mask)
+            y_mean, x_mean = red_coords.mean(axis=0)
+            center_x = (patch.shape[1] - 1) / 2.0
+            center_y = (patch.shape[0] - 1) / 2.0
+            dx = x_mean - center_x
+            dy = y_mean - center_y
+
+            if abs(dx) >= abs(dy):
+                delta = (0, 1) if dx >= 0 else (0, -1)
+            else:
+                delta = (1, 0) if dy >= 0 else (-1, 0)
+
+            exit_cell = (row + delta[0], col + delta[1])
+            if 0 <= exit_cell[0] < maze_size and 0 <= exit_cell[1] < maze_size:
+                gates[(row, col)] = exit_cell
+
+    return gates
 
 
 def classify_icon(rgb_mean: Tuple[float, float, float]) -> int:
