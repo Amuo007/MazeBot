@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.resources import path
 import math
 import random
 from collections import deque
@@ -26,6 +27,7 @@ ACTIONS: List[Action] = [
 ]
 ACTION_TO_INDEX: Dict[Action, int] = {action: idx for idx, action in enumerate(ACTIONS)}
 
+PERMANENT_HAZARD_THRESHOLD = 4
 
 @dataclass
 class ReplayBuffer:
@@ -204,6 +206,8 @@ class DQNAgent:
         self.current_path = []
         self.last_search_expanded = []
         self.last_search_closed = set()
+        self.hazard_cooldown_until.clear()
+        self.episode_steps = 0
 
     @staticmethod
     def _manhattan(a: Cell, b: Cell) -> int:
@@ -217,6 +221,7 @@ class DQNAgent:
         self.last_result = result
         self.memory.visited.add(result.current_position)
         self.global_visit_counts[result.current_position] = self.global_visit_counts.get(result.current_position, 0) + 1
+        self.episode_steps += 1
 
     @staticmethod
     def _edge_key(a: Cell, b: Cell) -> Tuple[Cell, Cell]:
@@ -272,7 +277,7 @@ class DQNAgent:
                 # Fire/hazard is dynamic. Avoid it for a short horizon, then allow replanning through it.
                 self.hazard_cooldown_until[target] = max(
                     self.hazard_cooldown_until.get(target, 0),
-                    current_step + 10,
+                    current_step + 5,
                 )
                 self.action_transitions.pop((prev_pos, effective_action_idx), None)
             elif result.wall_hits == 0 and not result.is_dead:
@@ -280,14 +285,21 @@ class DQNAgent:
 
                 # If stepping succeeds through a previously marked hazard cell, clear temporary block.
                 if target in self.memory.known_hazards:
-                    self.hazard_cooldown_until[target] = min(
-                        self.hazard_cooldown_until.get(target, 0),
-                        current_step,
-                    )
+                    self.hazard_cooldown_until[target] = max(
+                    self.hazard_cooldown_until.get(target, 0),
+                    self.episode_steps + 5,
+                )
+                
+                if self.episode_steps >= self.hazard_cooldown_until.get(target, 0):
+                    self.hazard_cooldown_until[target] = self.episode_steps
 
     def _is_hazard_blocked_now(self, cell: Cell, env: MazeEnvironment) -> bool:
+        # If we've died here repeatedly and never passed, treat as permanent wall
+        if self.hazard_hit_counts.get(cell, 0) >= PERMANENT_HAZARD_THRESHOLD:
+            if cell not in self.action_transitions.values():
+                return True  # never successfully passed through, block it
         cutoff = self.hazard_cooldown_until.get(cell, 0)
-        return int(env.total_actions_executed) < cutoff
+        return self.episode_steps < cutoff
 
     def _predicted_next_cell(self, env: MazeEnvironment, cell: Cell, action: Action) -> Optional[Cell]:
         if not self._is_move_action(action):
@@ -322,12 +334,48 @@ class DQNAgent:
             if predicted in self.memory.known_hazards and self._is_hazard_blocked_now(predicted, env):
                 continue
 
-            if predicted not in seen:
-                seen.add(predicted)
-                out.append(predicted)
+            effective = self.memory.known_teleports.get(predicted, predicted)
+            if effective not in seen:
+                seen.add(effective)
+                out.append(effective)
 
+        return out 
+
+    def _wait_for_hazard_action(self, env: MazeEnvironment) -> Optional[int]:
+        """
+        If the only thing blocking A* is a cooling-down hazard adjacent to us,
+        return WAIT so we stand still until it clears.
+        """
+        pos = env.position
+        for action in (Action.MOVE_UP, Action.MOVE_DOWN, Action.MOVE_LEFT, Action.MOVE_RIGHT):
+            target = env.action_to_target(pos, action)
+            if not env.in_bounds(target):
+                continue
+            if target in self.memory.known_hazards and self._is_hazard_blocked_now(target, env):
+                # Check: if we ignore hazard blocking, does A* find a path through here?
+                path = astar_search(
+                    pos,
+                    env.goal,
+                    lambda cell: self._neighbors_ignoring_hazard_cooldown(env, cell),
+                )
+                if len(path) >= 2 and path[1] == target:
+                    return ACTION_TO_INDEX[Action.WAIT]
+        return None
+
+    def _neighbors_ignoring_hazard_cooldown(self, env: MazeEnvironment, cell: Cell) -> List[Cell]:
+        """Same as _neighbors_for_astar but treats all hazard cells as passable."""
+        out: List[Cell] = []
+        seen: Set[Cell] = set()
+        for action in (Action.MOVE_UP, Action.MOVE_DOWN, Action.MOVE_LEFT, Action.MOVE_RIGHT):
+            predicted = self._predicted_next_cell(env, cell, action)
+            if predicted is None:
+                continue
+            effective = self.memory.known_teleports.get(predicted, predicted)
+            if effective not in seen:
+                seen.add(effective)
+                out.append(effective)
         return out
-
+        
     def _astar_action_index(
         self,
         env: MazeEnvironment,
@@ -357,9 +405,24 @@ class DQNAgent:
             self.current_path = path
 
         if len(path) < 2:
+        # NEW: before giving up, check if waiting out a hazard would help
+            wait_idx = self._wait_for_hazard_action(env)
+            if wait_idx is not None:
+                return wait_idx
             return None
+        
+        next_cell = path[1]
 
-        desired_action = self._find_action_to_next(env, path[0], path[1])
+        # If next_cell is a teleport destination, the real cell to walk INTO
+        # is the entry cell, not the destination. Find it.
+        teleport_entry = None
+        for entry, dest in self.memory.known_teleports.items():
+            if dest == next_cell:
+                teleport_entry = entry
+                break
+
+        target_cell = teleport_entry if teleport_entry is not None else next_cell
+        desired_action = self._find_action_to_next(env, path[0], target_cell)
         if desired_action is None:
             return None
 
@@ -455,10 +518,24 @@ class DQNAgent:
             reward += 40.0 if warmup_phase else 200.0
         if result.is_confused:
             reward -= 0.05
-        if result.current_position == prev_pos and not result.is_goal_reached:
+
+        adjacent_to_active_hazard = any(
+            env.action_to_target(prev_pos, a) in self.memory.known_hazards
+            and self._is_hazard_blocked_now(env.action_to_target(prev_pos, a), env)
+            for a in (Action.MOVE_UP, Action.MOVE_DOWN, Action.MOVE_LEFT, Action.MOVE_RIGHT)
+            if env.in_bounds(env.action_to_target(prev_pos, a))
+        )
+        if result.current_position == prev_pos and not result.is_goal_reached and not adjacent_to_active_hazard:
             reward -= 0.15
+
         if discovered_new_cell:
             reward += 0.75 if warmup_phase else 0.20
+        if result.teleported:
+        # Reward exploring a new teleport connection
+            if prev_pos not in self.memory.known_teleports:
+                reward += 1.5  # discovered a new teleport mapping
+            else:
+                reward += 0.3  # reward using a known teleport as part of navigation
 
         return float(reward)
 
@@ -781,6 +858,10 @@ class DQNAgent:
                     )
 
             agent.world_models = normalized
+
+        agent.hazard_cooldown_until.clear()
+        for wm in agent.world_models.values():
+            wm.hazard_cooldown_until.clear()
 
         if env is not None:
             agent.bind_environment(env)

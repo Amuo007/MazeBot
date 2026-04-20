@@ -5,13 +5,15 @@ from pathlib import Path
 from typing import List
 
 from agent import MazeAgent
+from cnn_agent import CNNAgent
 from dqn_agent import DQNAgent
 from environment import MazeEnvironment
 from visualizer import animate_episode
 
 
 DEFAULT_IMAGE = "maze_5_edited.png"
-DEFAULT_CHECKPOINT = "checkpoints/dqn_maze.pt"
+DEFAULT_DQN_CHECKPOINT = "checkpoints/dqn_maze.pt"
+DEFAULT_CNN_CHECKPOINT = "checkpoints/cnn_maze.pt"
 
 
 def run_astar(image_path: str, max_turns: int, frame_ms: int) -> None:
@@ -61,13 +63,23 @@ def resolve_maps(args: argparse.Namespace, project_root: Path) -> List[str]:
     return existing
 
 
-def run_dqn_train(args: argparse.Namespace, project_root: Path) -> None:
+def default_checkpoint_for_agent(agent_name: str) -> str:
+    if agent_name == "cnn":
+        return DEFAULT_CNN_CHECKPOINT
+    return DEFAULT_DQN_CHECKPOINT
+
+
+def run_rl_train(args: argparse.Namespace, project_root: Path) -> None:
     map_paths = resolve_maps(args, project_root)
-    print(f"[train] maps={len(map_paths)}")
+    print(f"[train] agent={args.agent} maps={len(map_paths)}")
     for path in map_paths:
         print(f"  - {path}")
 
-    agent = DQNAgent()
+    if args.agent == "cnn":
+        agent = CNNAgent()
+    else:
+        agent = DQNAgent()
+
     history = agent.train(
         map_paths=map_paths,
         episodes=args.episodes,
@@ -98,7 +110,7 @@ def run_dqn_train(args: argparse.Namespace, project_root: Path) -> None:
             )
 
 
-def run_dqn_play(args: argparse.Namespace) -> None:
+def run_rl_play(args: argparse.Namespace) -> None:
     if not Path(args.checkpoint).exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
@@ -106,21 +118,28 @@ def run_dqn_play(args: argparse.Namespace) -> None:
     env = MazeEnvironment(image_path=image_path, maze_size=64)
     env.reset()
 
-    agent = DQNAgent.load_from_checkpoint(args.checkpoint, env=env)
+    if args.agent == "cnn":
+        agent = CNNAgent.load_from_checkpoint(args.checkpoint, env=env)
+    else:
+        agent = DQNAgent.load_from_checkpoint(args.checkpoint, env=env)
     agent.reset_episode()
 
     print(f"[play] map={image_path}")
+    print(f"[play] agent={args.agent}")
     print(f"[play] checkpoint={args.checkpoint}")
     animate_episode(env, agent, max_turns=args.max_turns, frame_ms=args.frame_ms)
     print("[play] episode stats:", env.get_episode_stats())
 
 
-def run_dqn_eval(args: argparse.Namespace, project_root: Path) -> None:
+def run_rl_eval(args: argparse.Namespace, project_root: Path) -> None:
     if not Path(args.checkpoint).exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
     map_paths = resolve_maps(args, project_root)
-    agent = DQNAgent.load_from_checkpoint(args.checkpoint)
+    if args.agent == "cnn":
+        agent = CNNAgent.load_from_checkpoint(args.checkpoint)
+    else:
+        agent = DQNAgent.load_from_checkpoint(args.checkpoint)
 
     metrics = agent.evaluate(
         map_paths=map_paths,
@@ -137,8 +156,9 @@ def run_dqn_eval(args: argparse.Namespace, project_root: Path) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MazeBot A* + DQN runner")
+    parser = argparse.ArgumentParser(description="MazeBot A* + RL runner")
     parser.add_argument("--mode", choices=["astar", "train", "play", "eval"], default="train")
+    parser.add_argument("--agent", choices=["dqn", "cnn"], default="dqn", help="RL agent to use for train/play/eval modes.")
     parser.add_argument("--image", default="", help="Single map image path for astar/play. For train/eval, acts as a single-map fallback if --maps is not provided.")
     parser.add_argument(
         "--maps",
@@ -149,7 +169,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-episodes", type=int, default=3, help="Evaluation episodes per map")
     parser.add_argument("--max-turns", type=int, default=1500)
     parser.add_argument("--frame-ms", type=int, default=90)
-    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
+    parser.add_argument(
+        "--checkpoint",
+        default="",
+        help="Checkpoint path. If omitted, defaults to checkpoints/dqn_maze.pt or checkpoints/cnn_maze.pt based on --agent.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--warmup-episodes", type=int, default=20, help="Number of initial exploration-only episodes before hybrid RL+A* mode.")
@@ -161,21 +185,24 @@ def main() -> None:
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
 
+    if not args.checkpoint:
+        args.checkpoint = default_checkpoint_for_agent(args.agent)
+
     if args.mode == "astar":
         image_path = args.image or DEFAULT_IMAGE
         run_astar(image_path, args.max_turns, args.frame_ms)
         return
 
     if args.mode == "train":
-        run_dqn_train(args, project_root)
+        run_rl_train(args, project_root)
         return
 
     if args.mode == "play":
-        run_dqn_play(args)
+        run_rl_play(args)
         return
 
     if args.mode == "eval":
-        run_dqn_eval(args, project_root)
+        run_rl_eval(args, project_root)
         return
 
     raise ValueError(f"Unsupported mode: {args.mode}")
