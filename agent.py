@@ -159,7 +159,7 @@ class MazeAgent:
             idx = self.current_path.index(self.current_pos)
             self.current_path = self.current_path[idx:]
 
-    def astar_suggestion(self) -> Optional[Action]:
+    def path_suggestion(self) -> Optional[Action]:
         if len(self.current_path) < 2:
             return None
         return self.controller.delta_to_action(self.current_path[0], self.current_path[1])
@@ -174,10 +174,10 @@ class MazeAgent:
         if meta_action == MetaAction.WAIT:
             return Action.WAIT
 
-        suggestion = self.astar_suggestion()
+        suggestion = self.path_suggestion()
         base_action = suggestion if suggestion is not None else Action.WAIT
 
-        if meta_action == MetaAction.FOLLOW_ASTAR_INVERTED:
+        if meta_action == MetaAction.FOLLOW_PATH_INVERTED:
             return self.controller.invert_action(base_action)
 
         return base_action
@@ -204,7 +204,7 @@ class MazeAgent:
             return position
         return self.teleport_pairs.get(target, target)
 
-    def _build_follow_astar_actions(self, steps: int = ACTIONS_PER_TURN) -> List[Action]:
+    def _build_follow_path_actions(self, steps: int = ACTIONS_PER_TURN) -> List[Action]:
         actions: List[Action] = []
         saved_pos = self.current_pos
         saved_path = list(self.current_path)
@@ -220,7 +220,7 @@ class MazeAgent:
                 else:
                     self._advance_path()
 
-                suggestion = self.astar_suggestion()
+                suggestion = self.path_suggestion()
                 next_action = suggestion if suggestion is not None else Action.WAIT
                 actions.append(next_action)
                 self.current_pos = self._simulate_transition(self.current_pos, next_action)
@@ -267,10 +267,10 @@ class MazeAgent:
             )
 
         chosen_meta_action = self.qlearner.select_action(current_state)
-        follow_actions = self._build_follow_astar_actions(ACTIONS_PER_TURN)
+        follow_actions = self._build_follow_path_actions(ACTIONS_PER_TURN)
         if chosen_meta_action == MetaAction.WAIT:
             turn_actions = [Action.WAIT] * ACTIONS_PER_TURN
-        elif chosen_meta_action == MetaAction.FOLLOW_ASTAR_INVERTED:
+        elif chosen_meta_action == MetaAction.FOLLOW_PATH_INVERTED:
             turn_actions = [self.controller.invert_action(action) for action in follow_actions]
         else:
             turn_actions = follow_actions

@@ -5,12 +5,12 @@ MazeBot is a maze-solving project built around two related ideas:
 1. Blind exploration:
    The system first explores a maze without full certainty about walls, teleports, or fire timing. It builds up its own discovered map over multiple episodes.
 2. RL execution:
-   A Q-learning policy then decides how to act turn by turn while following a route toward the goal, especially around confusion and timing-sensitive situations.
+   A Q-learning policy then decides how to act turn by turn while following a path toward the goal, especially around confusion and timing-sensitive situations.
 
 The current project has two main runner files:
 
 - `run.py`
-  Full two-phase pipeline on `maze_beta.png`.
+  Full two-phase pipeline on `maze_gamma.png`.
   Phase 1 builds blind exploration knowledge.
   Phase 2 uses the learned Q-table plus the discovered route to run the endgame.
 - `run_RL.py`
@@ -52,8 +52,8 @@ After exploration produces a discovered route, the code builds a route-following
 
 The RL policy does not choose arbitrary maze directions directly. Instead, it chooses among higher-level meta actions:
 
-- follow the planned route normally
-- follow the planned route inverted
+- follow the discovered route normally
+- follow the discovered route inverted
 - wait
 
 That matters because the maze contains confusion tiles and moving hazards.
@@ -167,7 +167,7 @@ Core RL-controlled maze agent.
 Responsible for:
 
 - tracking current position and visited cells
-- asking A* for a route
+- asking for the next step along the current path
 - converting a chosen meta action into a primitive environment action
 - updating the Q-table from episode feedback
 
@@ -362,7 +362,7 @@ python3 run.py
 
 Notes:
 
-- uses `maze_beta.png`
+- uses `maze_gamma.png`
 - first performs blind exploration
 - loads `qtable.json`
 - then performs RL-guided route execution
@@ -394,7 +394,7 @@ If `cv2` is missing, the environment package cannot load maze images.
 The project is organized around two layers of intelligence:
 
 - exploration discovers a usable map
-- RL decides how to execute safely and robustly inside the maze dynamics
+- RL decides how to follow the current path safely and robustly inside the maze dynamics
 
 `run.py` combines both phases.
 `run_RL.py` is the direct RL-only path.

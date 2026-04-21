@@ -1,8 +1,8 @@
 {
   "report_type": "phase_2_endgame_evaluation",
   "phase_scope": "phase_2_only",
-  "generated_at_utc": "2026-04-20T22:02:20.779406+00:00",
-  "maze_image": "maze_gamma_imp.png",
+  "generated_at_utc": "2026-04-21T21:25:16.078231+00:00",
+  "maze_image": "maze_gamma.png",
   "success": true,
   "terminated_reason": "goal_reached",
   "turn_limit": 10000,
@@ -21,32 +21,32 @@
     ]
   },
   "raw_counts": {
-    "turns_taken": 2370,
-    "total_actions_executed": 11783,
-    "actions_planned": 11850,
-    "deaths": 33,
-    "wall_hits": 224,
-    "teleports_triggered": 29,
-    "confused_turns": 153,
-    "total_cells_visited_including_duplicates": 11560,
-    "unique_cells_visited": 362,
-    "path_length_excluding_teleports": 11559
+    "turns_taken": 98,
+    "total_actions_executed": 483,
+    "actions_planned": 490,
+    "deaths": 2,
+    "wall_hits": 0,
+    "teleports_triggered": 2,
+    "confused_turns": 0,
+    "total_cells_visited_including_duplicates": 484,
+    "unique_cells_visited": 255,
+    "path_length_excluding_teleports": 483
   },
   "route_summary": {
-    "discovered_route_length_cells": 361,
-    "route_progress_index": 359,
-    "route_completion_ratio": 0.9944598337950139,
-    "discovered_cells_from_phase_1": 775,
-    "discovered_walls_from_phase_1": 901,
+    "discovered_route_length_cells": 254,
+    "route_progress_index": 250,
+    "route_completion_ratio": 0.984251968503937,
+    "discovered_cells_from_phase_1": 565,
+    "discovered_walls_from_phase_1": 652,
     "discovered_teleports_from_phase_1": 1
   },
   "derived_metrics": {
     "success_rate": 1.0,
-    "avg_turns": 2370.0,
-    "avg_deaths": 33.0,
-    "avg_path_length": 11559.0,
-    "death_rate": 0.013924050632911392,
-    "exploration_efficiency": 0.031314878892733565
+    "avg_turns": 98.0,
+    "avg_deaths": 2.0,
+    "avg_path_length": 483.0,
+    "death_rate": 0.02040816326530612,
+    "exploration_efficiency": 0.5268595041322314
   },
   "notes": [
     "This report is generated from the phase 2 endgame execution only.",

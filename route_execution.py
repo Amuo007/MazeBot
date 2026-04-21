@@ -128,7 +128,7 @@ class RouteExecutionAgent(MazeAgent):
     def _replan(self) -> None:
         self.current_path = self._build_route_suffix()
 
-    def astar_suggestion(self) -> Optional[Action]:
+    def path_suggestion(self) -> Optional[Action]:
         if len(self.current_path) < 2:
             return None
 

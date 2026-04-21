@@ -9,7 +9,7 @@ from qlearning import QLearner, build_default_qlearner
 from route_execution import build_endgame_agent
 from visualizer import animate_episode
 
-IMAGE_PATH = "maze_beta.png"
+IMAGE_PATH = "maze_gamma.png"
 ANIMATION_FRAME_MS = 100
 QTABLE_PATH = "qtable.json"
 

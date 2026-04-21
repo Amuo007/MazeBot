@@ -14,19 +14,20 @@ State = Tuple[int, int, int, int]
 
 
 class MetaAction(Enum):
-    FOLLOW_ASTAR = 0
-    FOLLOW_ASTAR_INVERTED = 1
+    # Keep values and order stable so existing saved Q-tables stay compatible.
+    FOLLOW_PATH = 0
+    FOLLOW_PATH_INVERTED = 1
     WAIT = 2
 
 
 META_ACTIONS = [
-    MetaAction.FOLLOW_ASTAR,
-    MetaAction.FOLLOW_ASTAR_INVERTED,
+    MetaAction.FOLLOW_PATH,
+    MetaAction.FOLLOW_PATH_INVERTED,
     MetaAction.WAIT,
 ]
 
-ACTIONS_NORMAL = [MetaAction.FOLLOW_ASTAR, MetaAction.WAIT]
-ACTIONS_CONFUSED = [MetaAction.FOLLOW_ASTAR, MetaAction.FOLLOW_ASTAR_INVERTED, MetaAction.WAIT]
+ACTIONS_NORMAL = [MetaAction.FOLLOW_PATH, MetaAction.WAIT]
+ACTIONS_CONFUSED = [MetaAction.FOLLOW_PATH, MetaAction.FOLLOW_PATH_INVERTED, MetaAction.WAIT]
 REWARD_GOAL = 100.0
 REWARD_DEATH = -100.0
 REWARD_WALL_HIT = -10.0
@@ -148,7 +149,7 @@ class QLearner:
         if wall_hits > 0:
             reward += REWARD_WALL_HIT * wall_hits
 
-        if chosen_meta_action in (MetaAction.FOLLOW_ASTAR, MetaAction.FOLLOW_ASTAR_INVERTED) and moved:
+        if chosen_meta_action in (MetaAction.FOLLOW_PATH, MetaAction.FOLLOW_PATH_INVERTED) and moved:
             reward += REWARD_FOLLOW_SUCCESS
 
         if chosen_meta_action == MetaAction.WAIT:
