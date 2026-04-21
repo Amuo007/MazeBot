@@ -1,560 +1,497 @@
 # MazeBot
 
-MazeBot is a two-phase maze solving project written in Python.
+MazeBot is a two-phase maze-solving system implemented in Python. The project combines blind exploration with reinforcement learning to solve image-based mazes that include dynamic hazards and control-altering tiles.
 
-The main idea is simple:
+The primary workflow is:
 
-1. Phase 1 explores the maze without knowing everything in advance.
-2. Phase 2 uses reinforcement learning (RL) to safely follow the route discovered in phase 1.
+1. explore the maze and build usable knowledge
+2. extract a route from the discovered graph
+3. use a trained RL policy to execute that route safely
 
-The main entry point of this project is:
+The main entry point for the full project is:
 
 ```bash
 python3 run.py
 ```
 
-This README explains `run.py` in simple language and treats it as the real main flow of the project.
+## Project Overview
 
-## What This Project Is
+MazeBot solves a maze parsed from an input image. The environment is not static. In addition to walls and open cells, the maze can contain:
 
-This project solves a maze from an image file.
-
-The maze is not just walls and empty cells. It can also contain:
-
-- fire that changes over time
-- confusion tiles that reverse movement directions
-- teleports
+- rotating fire hazards
+- confusion tiles that reverse movement controls
+- teleport pairs
 - one-way gates
 
-Because of that, solving the maze is not just "find a shortest path once and walk it."
+Because of these mechanics, the problem is not only about finding a geometric path. The system also has to account for timing, control inversion, and hazard-aware execution.
 
-The project splits the job into two parts:
+The project is organized into two coordinated phases:
 
-- Phase 1 learns the maze by experience
-- Phase 2 decides how to execute the learned route under dangerous maze rules
+- Phase 1: blind exploration and knowledge building
+- Phase 2: RL-guided route execution
 
-## Language And Main Libraries
+## Technology Stack
 
 - Language: Python 3
-- Numeric arrays: `numpy`
+- Array and matrix operations: `numpy`
 - Image parsing: `opencv-python` / `cv2`
-- Animation / visualization: `matplotlib`
+- Visualization: `matplotlib`
 
-## Main Entry Point
+## Primary Workflow (`run.py`)
 
-`run.py` is the main program.
+`run.py` is the main pipeline used to run the full system on `maze_gamma.png`.
 
-When you run it, it does this:
+At a high level, it performs the following steps:
 
-1. Loads the maze image `maze_gamma.png`
-2. Prints the start and goal cells
-3. Runs blind exploration to build knowledge of the maze
-4. Extracts a route from the discovered knowledge
-5. Loads an existing trained RL Q-table from `qtable.json`
-6. Runs the RL endgame on top of that discovered route
-7. Writes `phase2_report.json`
-8. Plays a final animated run
+1. load and parse the maze image
+2. identify the start and goal cells
+3. run blind exploration to build maze knowledge
+4. extract a discovered route from the explored graph
+5. load an existing trained Q-table from `qtable.json`
+6. run the RL endgame using the discovered route
+7. write `phase2_report.json`
+8. render the final visualized episode
 
-Important:
+Important notes:
 
-- `run.py` does not train the Q-table
-- `run.py` expects `qtable.json` to already exist and be compatible
-- if the Q-table is missing or outdated, `run_RL.py` is the retraining helper, but `run.py` is still the main project pipeline
+- `run.py` does not train the RL policy
+- `run.py` expects a compatible `qtable.json`
+- RL training and Q-table regeneration are handled separately by `run_RL.py`
 
-## High-Level Two-Phase Flow
+## End-to-End Architecture
 
 ```mermaid
 flowchart TD
-    A["python3 run.py"] --> B["Load maze image and parse maze objects"]
+    A["run.py"] --> B["Parse maze image"]
     B --> C["Phase 1: blind exploration"]
     C --> D["Build discovered knowledge"]
     D --> E["Extract discovered route"]
     E --> F["Load trained Q-table"]
     F --> G["Phase 2: RL route execution"]
     G --> H["Write phase2_report.json"]
-    H --> I["Show final animated episode"]
+    H --> I["Render final animation"]
 ```
 
-## Which Search Logic `run.py` Uses
+## Search And Control Strategy
 
-`run.py` uses more than one search idea.
+MazeBot does not use a single algorithm from start to finish. The full `run.py` pipeline combines several search and control strategies:
 
-That is important, because the whole project is not just "A*" and it is not just "BFS" either.
+- greedy frontier selection during exploration
+- timed A*-style planning during exploration movement
+- BFS route extraction after exploration
+- RL-guided route execution in the final phase
 
-### Phase 1 uses:
+The clearest summary is:
 
-- greedy frontier probing to decide which unknown area to test next
-- a timed A*-style planner to physically move through the maze while respecting known fire timing
-- repeated episodes that keep memory from earlier runs
+- Phase 1 builds the map
+- BFS extracts the route from the discovered graph
+- Phase 2 learns how to execute that route under maze dynamics
 
-### After phase 1 finishes:
+## Phase 1: Blind Exploration
 
-- BFS is used to extract the final discovered route through the graph the explorer learned
+Phase 1 is responsible for learning the maze without starting from full ground-truth knowledge.
 
-### Phase 2 uses:
+### Goal
 
-- RL to choose how to follow that route
-- not fresh full A* replanning every turn in `run.py`
+The purpose of phase 1 is to produce a usable internal representation of the maze by interacting with the real environment over repeated episodes.
 
-So the clearest summary is:
+The explorer gradually learns:
 
-**Phase 1 = exploration and map building**
+- which edges are open
+- which edges are blocked
+- which cells are teleports
+- which cells are confusion tiles
+- which fire phases are dangerous at specific cells
 
-**Route extraction = BFS on discovered knowledge**
+### Initial Knowledge
 
-**Phase 2 = RL-guided route following**
+At the beginning of exploration, the system only assumes:
 
-## Phase 1 In Simple Language
+- maze size
+- start cell
+- goal cell
 
-Phase 1 is the "learn the maze first" part.
+It does not begin with a trusted full map of walls, teleports, or safe timing windows.
 
-The explorer does not start with the full maze map.
-It has to discover useful information by actually moving in the environment.
+### Knowledge Representation
 
-### What Phase 1 Knows At The Start
-
-At the beginning, the explorer only has a very small amount of knowledge:
-
-- the maze size
-- the start cell
-- the goal cell
-
-It does not begin with a full trusted map of:
-
-- all open paths
-- all blocked walls
-- all teleports
-- all dangerous fire timings
-
-That is why the phase is called blind exploration.
-
-### What Phase 1 Learns Over Time
-
-As exploration runs, it builds a memory object called `BlindKnowledge`.
-
-That memory stores:
+Phase 1 stores its learned information in `BlindKnowledge`. This structure keeps:
 
 - visited cells
-- tile types it has seen
-- edges it knows are open
-- edges it knows are blocked by walls
-- teleport pairs it has discovered
-- dangerous fire phases that caused death
+- observed tile types
+- open edges
+- blocked edges
+- discovered teleport mappings
+- dangerous cells and deadly fire phases
 - confusion cells
 
-This is the core idea of phase 1:
+This knowledge persists across exploration episodes, which allows later episodes to reuse what earlier runs discovered.
 
-The system is slowly building its own map from experience.
+### How Exploration Works
 
-### How One Exploration Episode Works
+Each exploration episode begins at the start cell and runs until one of the following happens:
 
-One exploration episode is one run from the start until it succeeds, gets stuck, or hits the step budget.
+- the goal is reached
+- the step budget is exhausted
+- no valid progress can be made
 
-During an episode, the explorer:
+During an episode, the explorer moves in the real environment and continuously updates `BlindKnowledge` based on what actually happens.
 
-1. tries to move toward useful targets
-2. learns from every wall hit
-3. learns from every successful move
-4. learns from every teleport
-5. learns from every death caused by fire
-6. keeps that knowledge for later episodes
+Examples of useful discoveries include:
 
-So even if one episode fails, the next episode is smarter because memory is shared.
+- hitting a wall and marking that edge as blocked
+- crossing an edge and marking it as open
+- triggering a teleport and recording its destination
+- dying on fire and storing the dangerous phase for that cell
+- entering a confusion tile and marking it as such
 
-### How Phase 1 Decides Where To Go
+### Exploration Planning Logic
 
-Phase 1 has two main behaviors.
+Phase 1 uses two complementary planning behaviors.
 
-#### 1. Try to move toward the goal
+#### 1. Timed goal-directed planning
 
-It uses a timed planner that reasons over:
+The explorer uses a timed A*-style planner to move toward the goal. The planner reasons over `(cell, time)` states rather than only position.
 
-- current cell
-- time in the fire cycle
-- possible next moves
-- whether waiting is safer than moving
+This matters because a move is only useful if it is both:
 
-This is an A*-style search over `(cell, time)` states.
+- spatially valid
+- temporally safe with respect to the fire cycle
 
-In simple words:
+The planner can also choose to wait when waiting produces a safer next state.
 
-It is not just asking "which cell is next?"
+#### 2. Greedy frontier probing
 
-It is also asking "which cell is safe at this time?"
+If exploration stalls, the system switches to frontier probing. In this mode it selects promising unknown cells near already visited territory and probes them directly.
 
-#### 2. Probe unknown frontier cells when progress stalls
+The probe selection is greedy. It prefers frontier moves that are:
 
-If the explorer has gone a while without learning anything new, it switches to a frontier probing mode.
+- reachable from the current explored graph
+- closer to the goal
+- cheaper to attempt from the current position
 
-In that mode it:
+### Why Exploration Repeats Across Episodes
 
-- finds a visited cell near useful unknown territory
-- picks a promising unknown neighbor
-- goes there to test it
+Exploration is intentionally iterative. A failed episode is still useful because it adds information to shared knowledge.
 
-That frontier choice is greedy.
+Over repeated episodes, the system becomes more effective because it can:
 
-It prefers probes that look closer to the goal and cheaper to reach from the current position.
+- avoid previously confirmed blocked edges
+- reuse discovered teleports
+- avoid previously observed deadly fire timings
+- expand the discovered graph more efficiently
 
-### What Counts As Learning In Phase 1
-
-Phase 1 updates its knowledge whenever it discovers something new, such as:
-
-- "this edge is blocked"
-- "this edge is open"
-- "this cell teleports somewhere"
-- "this fire phase kills me here"
-- "this tile is confusion"
-
-That is why the explorer can improve even through failure.
-
-### Why Phase 1 Repeats Across Episodes
-
-The explorer is allowed to die, restart, and try again.
-
-That is not wasted work.
-
-Each episode adds more information to the shared memory, so later episodes can:
-
-- avoid known blocked paths
-- use discovered teleports
-- avoid known deadly fire timings
-- build a more complete graph of the maze
-
-### What Phase 1 Produces
+### Output Of Phase 1
 
 At the end of phase 1, `run.py` has:
 
-- discovered maze knowledge
+- a populated `BlindKnowledge` structure
 - a discovered route from start to goal
 
-That route is extracted with BFS over the discovered graph.
+That route is extracted with BFS over the discovered graph, not from the full hidden maze.
 
-This is very important:
+This distinction is important:
 
-The final route handed to phase 2 is not "the full hidden true maze shortest path."
-It is the shortest path through what phase 1 successfully discovered.
+The route used in phase 2 is the shortest route through what phase 1 has discovered, not necessarily the shortest route in the unseen full environment.
 
-## Phase 1 Flow Diagram
+### Phase 1 Configuration
+
+The exploration configuration is currently:
+
+| Setting | Value |
+| --- | --- |
+| `MAZE_SIZE` | `64` |
+| `FIRE_PHASE_COUNT` | `4` |
+| `FIRE_PHASE_TICKS` | `5` |
+| `TRAIN_EPISODES` | `220` |
+| `TRAINING_STEP_BUDGET` | `4500` |
+| `MAX_PHYSICAL_STEPS` | `20000` |
+| `STALL_FRONTIER_TRIGGER` | `300` |
+| `SUCCESS_STREAK_TO_STOP` | `1` |
+
+### Phase 1 Flow
 
 ```mermaid
 flowchart TD
-    A["Start episode"] --> B["Use current knowledge"]
-    B --> C["Try timed plan toward goal"]
-    C --> D["Move in real environment"]
-    D --> E["Learn from walls, deaths, teleports, confusion, open paths"]
-    E --> F{"Stalled?"}
-    F -- "No" --> C
-    F -- "Yes" --> G["Pick greedy frontier probe"]
-    G --> H["Probe unknown area"]
-    H --> E
-    E --> I{"Goal reached or budget hit?"}
-    I -- "No" --> C
-    I -- "Yes" --> J["Keep best discovered knowledge"]
+    A["Start exploration episode"] --> B["Use current discovered knowledge"]
+    B --> C["Timed planning toward goal"]
+    C --> D["Execute moves in environment"]
+    D --> E["Update discovered knowledge"]
+    E --> F{"Progress stalled?"}
+    F -- "No" --> G{"Goal reached or budget hit?"}
+    F -- "Yes" --> H["Pick greedy frontier probe"]
+    H --> I["Probe unknown frontier"]
+    I --> E
+    G -- "No" --> C
+    G -- "Yes" --> J["Keep best knowledge"]
 ```
 
-## What Phase 2 Gets From Phase 1
+## Phase 2: RL Route Execution
 
-Phase 2 does not start from zero.
+Phase 2 takes the route and discovered maze structure produced by phase 1 and focuses on safe execution.
 
-It receives useful outputs from phase 1:
+### Inputs From Phase 1
+
+Phase 2 receives:
 
 - the discovered route
 - discovered open edges
 - discovered blocked edges
 - discovered teleports
-- discovered tile information
-- the start and goal
+- discovered tile observations
+- start and goal positions
 
-Using that information, phase 2 builds a `RouteExecutionAgent`.
+These are used to build a `RouteExecutionAgent`.
 
-That agent converts phase-1 knowledge into:
+### Core Idea
 
-- a partial maze view it can navigate
-- a fixed route to follow
+In `run.py`, the RL policy is not performing a fresh global path search every turn. Instead, phase 2 follows the fixed route discovered in phase 1 and uses RL to decide how that route should be executed under dynamic maze conditions.
 
-## Phase 2 In Simple Language
+That is the intended division of responsibilities:
 
-Phase 2 is the "execute the route carefully" part.
+- Phase 1 decides where the route is
+- Phase 2 decides how to follow it robustly
 
-Instead of exploring from scratch, the agent now already has a route.
-Its job is to follow that route while dealing with maze hazards.
-
-### The Most Important Truth About Phase 2
-
-In `run.py`, the RL policy is mainly following the fixed discovered route from phase 1.
-
-It is not doing a brand-new full A* route search every turn.
-
-That is the right mental model for this project:
-
-- phase 1 discovers the route
-- phase 2 learns how to follow that route safely
-
-### How Phase 2 Works At A High Level
+### How Phase 2 Works
 
 At every turn:
 
-1. the agent looks at its current RL state
-2. the Q-table chooses a meta action
-3. that meta action is converted into real movement actions
-4. the environment executes up to 5 actions in that turn
-5. the result is used to update route progress and statistics
+1. the agent reads its current RL state
+2. the Q-table selects a meta action
+3. the meta action is expanded into primitive environment actions
+4. the environment executes up to five actions
+5. the result is used to update progress and report statistics
 
-For the final `run.py` endgame, epsilon is set to `0.0`, so the agent uses the learned policy greedily instead of exploring randomly.
+During the final `run.py` execution, epsilon is set to `0.0`, so the policy acts greedily using the learned Q-values.
 
-## RL State
+### Route-Following Behavior
 
-The RL state is a 4-value tuple:
+The `RouteExecutionAgent` keeps the fixed route produced by phase 1.
 
-| State Part | Meaning |
-| --- | --- |
-| `row` | current row of the agent |
-| `col` | current column of the agent |
-| `confused_flag` | `1` if controls are currently reversed, otherwise `0` |
-| `fire_phase` | which fire phase is active right now |
+If the current position is already on the route, the agent follows the remaining suffix of that route.
 
-In simple words, the RL policy asks:
+If the agent deviates from the exact route, it does not compute a brand-new arbitrary path. Instead, it attempts to reconnect to a valid future point on the same discovered route.
 
-- where am I?
-- are my controls reversed?
-- what fire timing phase am I in?
+This makes the phase-2 behavior route-aligned rather than free-form replanning.
 
-## RL Actions
+### Output Of Phase 2
 
-The RL policy does not directly pick raw moves like "up" or "left" as its main decision.
+Phase 2 produces:
 
-Instead, it chooses one of these higher-level meta actions:
+- a full endgame episode result
+- a final visualization
+- `phase2_report.json` with route and execution statistics
 
-| Meta Action | Meaning |
-| --- | --- |
-| `FOLLOW_PATH` | follow the current route normally |
-| `FOLLOW_PATH_INVERTED` | follow the current route with reversed controls |
-| `WAIT` | stay still for the turn |
-
-Important detail:
-
-- when not confused, the available choices are `FOLLOW_PATH` and `WAIT`
-- when confused, the inverted follow action becomes available too
-
-This is smart because confusion does not change the route itself.
-It changes how the route must be executed.
-
-## How The Route Is Followed In Phase 2
-
-The route-following agent keeps a fixed route from phase 1.
-
-If the agent is currently on that route, it keeps following the remaining suffix of the route.
-
-If the agent is not exactly on the route, it tries to reconnect to the nearest valid future part of that same route.
-
-So phase 2 is not "find any new best path."
-It is "stay aligned with the discovered route as well as possible."
-
-## RL Strategy
-
-The RL strategy is Q-learning with epsilon-greedy action selection.
-
-### During training
-
-- sometimes it picks random allowed meta actions
-- otherwise it picks the best-known action for the current state
-
-### During `run.py` final execution
-
-- epsilon is forced to `0.0`
-- the agent uses the learned best action from the Q-table
-
-## Reward Design
-
-The reward function tells the RL agent what is good and bad.
-
-| Event | Reward |
-| --- | --- |
-| reach goal | `+100` |
-| die | `-100` |
-| wall hit | `-10` each |
-| successful move while following path | `+2` |
-| wait | `-2` |
-| step cost | `-0.5` |
-| try to follow path but make no progress | `-2` |
-
-In simple words:
-
-- reaching the goal is very good
-- dying is very bad
-- bumping into walls is bad
-- useful forward movement is rewarded
-- waiting is allowed, but not free
-
-## Phase 2 Turn Logic
-
-There are two layers of action in phase 2.
-
-### Layer 1: RL chooses a meta action
-
-This is the strategic choice:
-
-- follow path
-- follow inverted path
-- wait
-
-### Layer 2: the agent expands that into primitive moves
-
-The maze environment supports up to 5 primitive actions per turn.
-
-So if the chosen meta action is `FOLLOW_PATH`, the agent builds a short sequence of path-following moves for the current turn.
-
-If the chosen meta action is `WAIT`, it sends wait actions for the turn.
-
-This matters because:
-
-- fire changes with time
-- confusion can stay active across turns
-- a turn is not just one single move
-
-## Phase 2 Flow Diagram
+### Phase 2 Flow
 
 ```mermaid
 flowchart TD
-    A["Current position + confusion flag + fire phase"] --> B["Read Q-table"]
+    A["Current state"] --> B["Read Q-table"]
     B --> C["Choose meta action"]
     C --> D{"Meta action"}
-    D -- "FOLLOW_PATH" --> E["Build normal path-following actions"]
-    D -- "FOLLOW_PATH_INVERTED" --> F["Build inverted path-following actions"]
-    D -- "WAIT" --> G["Send wait actions"]
-    E --> H["Environment executes up to 5 actions"]
+    D -- "FOLLOW_PATH" --> E["Build normal route-following actions"]
+    D -- "FOLLOW_PATH_INVERTED" --> F["Build inverted route-following actions"]
+    D -- "WAIT" --> G["Build wait actions"]
+    E --> H["Execute up to five actions"]
     F --> H
     G --> H
-    H --> I["Get turn result"]
+    H --> I["Receive turn result"]
     I --> J["Update route progress and stats"]
     J --> K{"Goal reached?"}
     K -- "No" --> A
     K -- "Yes" --> L["Finish episode"]
 ```
 
-## Important Maze Rules That Affect Both Phases
+## How The Two Phases Work Together
+
+The two phases are designed to solve different parts of the same problem.
+
+Phase 1 is responsible for building knowledge under uncertainty.
+Phase 2 is responsible for executing a discovered route under dynamic runtime conditions.
+
+This split keeps the system modular:
+
+- exploration handles mapping and discovery
+- RL handles timing-sensitive route execution
+
+In practice, this means `run.py` works as:
+
+1. discover enough of the maze to build a usable route
+2. hand that route to the route-execution agent
+3. let the RL policy choose how to follow it turn by turn
+
+## Reinforcement Learning Design
+
+### RL State
+
+The RL state is a 4-value tuple:
+
+| State Component | Meaning |
+| --- | --- |
+| `row` | current row |
+| `col` | current column |
+| `confused_flag` | `1` when controls are reversed, otherwise `0` |
+| `fire_phase` | active fire phase at the current turn |
+
+This gives the policy the minimum information needed to make timing-aware execution decisions.
+
+### RL Action Space
+
+The RL policy uses meta actions rather than raw low-level movement choices.
+
+| Meta Action | Purpose |
+| --- | --- |
+| `FOLLOW_PATH` | follow the route normally |
+| `FOLLOW_PATH_INVERTED` | follow the route using inverted controls |
+| `WAIT` | remain in place for the turn |
+
+Available actions depend on whether the agent is confused:
+
+- normal state: `FOLLOW_PATH`, `WAIT`
+- confused state: `FOLLOW_PATH`, `FOLLOW_PATH_INVERTED`, `WAIT`
+
+This design allows the policy to react directly to confusion without changing the route itself.
+
+### Reward Function
+
+The reward function is configured as follows:
+
+| Event | Reward |
+| --- | --- |
+| goal reached | `+100.0` |
+| death | `-100.0` |
+| wall hit | `-10.0` per hit |
+| successful path-following move | `+2.0` |
+| wait | `-2.0` |
+| step cost | `-0.5` |
+| no-progress path action | `-2.0` |
+
+This reward design encourages:
+
+- reaching the goal quickly
+- avoiding deaths and wall collisions
+- making real forward progress
+- using waiting only when it is strategically useful
+
+### Q-Learning Configuration
+
+The default Q-learning configuration is:
+
+| Parameter | Value |
+| --- | --- |
+| `alpha` | `0.1` |
+| `gamma` | `0.95` |
+| `epsilon` | `1.0` |
+| `epsilon_min` | `0.05` |
+| `epsilon_decay` | `0.995` |
+
+The Q-table is saved to `qtable.json`.
+
+### Turn Model
+
+The environment supports up to `5` primitive actions per turn.
+
+This is an important design detail. The RL policy chooses a meta action for the turn, and that meta action is then expanded into a short sequence of primitive moves or waits.
+
+As a result, the learned behavior is about turn-level control, not only single-step movement.
+
+## RL Training Workflow
+
+The trained Q-table used by `run.py` is generated separately by `run_RL.py`.
+
+`run_RL.py` uses the standard `MazeAgent` with the full parsed environment and trains a Q-table if a compatible one is not already present.
+
+The current training utility configuration is:
+
+| Setting | Value |
+| --- | --- |
+| `IMAGE_PATH` | `maze_alpha.png` |
+| `MAZE_SIZE` | `64` |
+| `TRAIN_EPISODES` | `500` |
+| `MAX_TURNS_PER_EP` | `5000` |
+| `VISUALIZE_EVERY` | `50` |
+| `ANIMATION_FRAME_MS` | `100` |
+
+Training proceeds as follows:
+
+1. initialize or load a Q-table
+2. run repeated episodes
+3. apply epsilon-greedy action selection during training
+4. decay epsilon after each episode
+5. periodically visualize training progress
+6. save the final Q-table to `qtable.json`
+
+Once the Q-table exists, `run.py` reuses it with epsilon forced to `0.0` for deterministic endgame execution.
+
+## Environment Mechanics
+
+The runtime environment includes several mechanics that directly affect both phases.
 
 ### Walls
 
-Walls block motion between neighboring cells.
-The agent learns blocked edges by physically bumping into them.
+Walls block movement between adjacent cells. Exploration learns walls by direct interaction.
 
 ### Fire
 
-Fire changes in phases over time.
-A cell can be safe now and dangerous later.
-
-This is why time matters in both exploration and RL state.
+Fire rotates through multiple phases over time. A cell that is safe in one phase may be lethal in another.
 
 ### Confusion
 
-Confusion reverses movement controls.
-
-For example:
-
-- intended up can become down
-- intended left can become right
-
-This is why the RL policy includes an inverted route-following action.
+Confusion reverses movement controls for a limited number of turns. This is why the policy includes both normal and inverted route-following actions.
 
 ### Teleports
 
-Some cells instantly move the agent to a paired location.
-
-Both phases learn or use these teleport mappings.
+Teleport cells move the agent instantly to a paired location. Exploration records these mappings as they are discovered.
 
 ### One-Way Gates
 
-Some cells only allow movement in one allowed exit direction.
+One-way gates restrict legal movement to a single exit direction from specific cells.
 
-This changes which neighbors are legal to move to.
+### Multi-Action Turns
 
-### Five Actions Per Turn
+Each turn can contain between one and five primitive actions. This affects both fire timing and how route-following actions are expanded.
 
-The environment allows up to 5 primitive actions in one turn.
+## Key Components
 
-That is why this project talks about:
-
-- primitive actions
-- turn planning
-- fire phase timing
-
-instead of only talking about one step at a time.
-
-## The Main Agents And Their Jobs
-
-### `BlindExplorer`
-
-Used in phase 1.
-
-Job:
-
-- explore the maze physically
-- learn from failures and successes
-- build `BlindKnowledge`
-
-### `RouteExecutionAgent`
-
-Used in phase 2 of `run.py`.
-
-Job:
-
-- take the route found in phase 1
-- stay aligned with that route
-- let RL choose how to execute it
-
-### `QLearner`
-
-Used for the RL decision layer.
-
-Job:
-
-- map states to meta-action values
-- choose actions with epsilon-greedy logic
-- store learned Q-values in `qtable.json`
-
-## Important Files
-
-| File | Purpose |
+| File | Responsibility |
 | --- | --- |
-| `run.py` | main two-phase pipeline |
-| `exploration/explorer.py` | phase 1 blind exploration engine |
+| `run.py` | full two-phase pipeline |
+| `exploration/explorer.py` | blind exploration engine |
 | `exploration/planning.py` | frontier probing, timed planning, BFS route extraction |
-| `exploration/knowledge.py` | memory built during exploration |
-| `route_execution.py` | builds the route-following agent for phase 2 |
-| `agent.py` | core agent logic and turn planning |
-| `qlearning.py` | RL state, actions, rewards, and Q-table logic |
-| `environment/runtime.py` | real maze rules during execution |
-| `evaluation.py` | writes `phase2_report.json` |
-| `visualizer.py` | final animation |
+| `exploration/knowledge.py` | exploration memory model |
+| `route_execution.py` | route-execution agent for phase 2 |
+| `agent.py` | shared agent logic and turn planning |
+| `qlearning.py` | RL state, action space, reward logic, Q-table updates |
+| `environment/runtime.py` | runtime maze rules |
+| `evaluation.py` | phase-2 evaluation and report writing |
+| `visualizer.py` | animated replay |
 
-## How To Run
+## Running The Project
 
-Run the main pipeline:
+Run the full two-phase pipeline:
 
 ```bash
 python3 run.py
 ```
 
-What you should expect:
+Expected outputs:
 
-1. maze preview prints the start and goal
-2. phase 1 exploration runs
-3. discovered-route stats are printed
-4. `qtable.json` is loaded
-5. phase 2 evaluation runs
-6. `phase2_report.json` is written
-7. a final animated episode is shown
+- console summaries for exploration and phase 2
+- `phase2_report.json`
+- final animated replay
 
-## Final Mental Model
+If a compatible `qtable.json` is missing, regenerate it with the training utility:
 
-If you want the shortest plain-English explanation of this project, use this:
+```bash
+python3 run_RL.py
+```
 
-**Phase 1 learns the maze.**
+## Summary
 
-**Phase 2 learns how to follow the learned route safely.**
+MazeBot is built around a deliberate separation of concerns:
 
-Or even shorter:
+- blind exploration builds a reliable discovered graph
+- BFS extracts a route from that graph
+- reinforcement learning decides how to execute the route under dynamic maze rules
 
-**explore first, then RL-guided route execution**
+That design makes `run.py` the complete project pipeline: explore first, then execute the discovered route with RL-guided control.
