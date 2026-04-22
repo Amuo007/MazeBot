@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
 from environment import (
     ACTIONS_PER_TURN,
+    Action,
     EMPTY,
     FIRE,
     FIRE_CENTER,
@@ -18,6 +21,7 @@ from environment import (
     TP_RED,
     TP_GREEN,
     TP_LAVENDER,
+    TurnResult,
 )
 
 NAME_TO_CHAR = {
@@ -139,7 +143,18 @@ def draw_marker_labels(ax, obj_matrix) -> None:
                 )
 
 
-def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> None:
+def _empty_action_counts() -> dict[str, int]:
+    return {action.name: 0 for action in Action}
+
+
+def _counter_to_action_counts(counter: Counter) -> dict[str, int]:
+    counts = _empty_action_counts()
+    for action_name, count in counter.items():
+        counts[action_name] = int(count)
+    return counts
+
+
+def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> dict:
     fig, ax = plt.subplots(figsize=(10, 10))
     n = env.maze_size
     fig.subplots_adjust(right=0.78)
@@ -180,8 +195,29 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
         "current_turn_actions": [],
         "turn_confused": False,
         "action_in_turn": 0,
+        "aggregated_turn_result": None,
     }
     ani_holder = {"ani": None}
+    run_summary = {
+        "actions_planned": 0,
+        "executed_steps": 0,
+        "movement_steps_executed": 0,
+        "total_wall_hits": 0,
+        "teleports_triggered": 0,
+        "confused_turns": 0,
+        "wait_actions_planned": 0,
+        "wait_actions_executed": 0,
+        "teleport_steps": 0,
+        "death_steps": 0,
+        "goal_steps": 0,
+        "turns_with_wait_actions": 0,
+        "turns_with_teleport": 0,
+        "turns_with_wall_hit": 0,
+        "planned_action_counts": Counter(),
+        "executed_action_counts": Counter(),
+        "effective_action_counts": Counter(),
+        "meta_action_counts": Counter(),
+    }
 
     def update_action_box() -> None:
         actions = state["current_turn_actions"]
@@ -204,16 +240,43 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
         if not state["pending_actions"]:
             state["pending_actions"] = agent.plan_turn(state["last_turn_result"])
             state["current_turn_actions"] = list(state["pending_actions"])
+            run_summary["actions_planned"] += len(state["current_turn_actions"])
+            run_summary["planned_action_counts"].update(action.name for action in state["current_turn_actions"])
+            run_summary["wait_actions_planned"] += sum(action == Action.WAIT for action in state["current_turn_actions"])
+            run_summary["turns_with_wait_actions"] += int(any(action == Action.WAIT for action in state["current_turn_actions"]))
+            chosen_meta_action = getattr(agent, "_last_meta_action", None)
+            if chosen_meta_action is not None:
+                run_summary["meta_action_counts"][chosen_meta_action.name] += 1
             state["turn_confused"] = env.confused_turns_remaining > 0
             env.confused_this_turn = state["turn_confused"]
             state["action_in_turn"] = 0
+            state["aggregated_turn_result"] = TurnResult(current_position=env.position)
             update_action_box()
 
         action = state["pending_actions"].pop(0)
         state["action_in_turn"] += 1
         update_action_box()
 
+        action_started_confused = state["turn_confused"] or env.confused_this_turn
+        effective_action = env.apply_confusion(action) if action_started_confused else action
         atomic_result = env.step_one_action(action, state["turn_confused"])
+        run_summary["executed_steps"] += 1
+        run_summary["executed_action_counts"][action.name] += 1
+        run_summary["effective_action_counts"][effective_action.name] += 1
+        run_summary["wait_actions_executed"] += int(action == Action.WAIT)
+        run_summary["movement_steps_executed"] += int(action != Action.WAIT)
+        run_summary["teleport_steps"] += int(atomic_result.teleported)
+        run_summary["death_steps"] += int(atomic_result.is_dead)
+        run_summary["goal_steps"] += int(atomic_result.is_goal_reached)
+
+        aggregated_turn_result = state["aggregated_turn_result"]
+        aggregated_turn_result.wall_hits += atomic_result.wall_hits
+        aggregated_turn_result.current_position = atomic_result.current_position
+        aggregated_turn_result.is_dead = atomic_result.is_dead
+        aggregated_turn_result.is_confused = aggregated_turn_result.is_confused or atomic_result.is_confused
+        aggregated_turn_result.is_goal_reached = atomic_result.is_goal_reached
+        aggregated_turn_result.teleported = aggregated_turn_result.teleported or atomic_result.teleported
+        aggregated_turn_result.actions_executed += atomic_result.actions_executed
 
         turn_finished = (
             atomic_result.is_dead
@@ -222,10 +285,17 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
         )
 
         if turn_finished:
-            turn_result = env.finish_turn(atomic_result)
+            turn_result = env.finish_turn(aggregated_turn_result)
+            run_summary["total_wall_hits"] += turn_result.wall_hits
+            run_summary["teleports_triggered"] += int(turn_result.teleported)
+            run_summary["confused_turns"] += int(turn_result.is_confused)
+            run_summary["turns_with_teleport"] += int(turn_result.teleported)
+            run_summary["turns_with_wall_hit"] += int(turn_result.wall_hits > 0)
             state["last_turn_result"] = turn_result
+            state["aggregated_turn_result"] = None
+            state["pending_actions"] = []
         else:
-            turn_result = atomic_result
+            turn_result = aggregated_turn_result
 
         im.set_data(build_display(get_display_obj_matrix(env, agent), env, agent))
         phase = (env.total_actions_executed // ACTIONS_PER_TURN) % len(env.fire_phase_sets)
@@ -274,3 +344,24 @@ def animate_episode(env, agent, max_turns: int = 10000, frame_ms: int = 120) -> 
 
     plt.tight_layout()
     plt.show()
+
+    return {
+        "actions_planned": run_summary["actions_planned"],
+        "executed_steps": run_summary["executed_steps"],
+        "movement_steps_executed": run_summary["movement_steps_executed"],
+        "total_wall_hits": run_summary["total_wall_hits"],
+        "teleports_triggered": run_summary["teleports_triggered"],
+        "confused_turns": run_summary["confused_turns"],
+        "wait_actions_planned": run_summary["wait_actions_planned"],
+        "wait_actions_executed": run_summary["wait_actions_executed"],
+        "teleport_steps": run_summary["teleport_steps"],
+        "death_steps": run_summary["death_steps"],
+        "goal_steps": run_summary["goal_steps"],
+        "turns_with_wait_actions": run_summary["turns_with_wait_actions"],
+        "turns_with_teleport": run_summary["turns_with_teleport"],
+        "turns_with_wall_hit": run_summary["turns_with_wall_hit"],
+        "planned_action_counts": _counter_to_action_counts(run_summary["planned_action_counts"]),
+        "executed_action_counts": _counter_to_action_counts(run_summary["executed_action_counts"]),
+        "effective_action_counts": _counter_to_action_counts(run_summary["effective_action_counts"]),
+        "meta_action_counts": {name: int(count) for name, count in run_summary["meta_action_counts"].items()},
+    }

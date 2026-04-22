@@ -1,11 +1,23 @@
 {
   "report_type": "phase_2_endgame_evaluation",
   "phase_scope": "phase_2_only",
-  "generated_at_utc": "2026-04-21T21:25:16.078231+00:00",
-  "maze_image": "maze_gamma.png",
+  "generated_at_utc": "2026-04-22T05:04:47.656950+00:00",
+  "maze_image": "maze_beta.png",
   "success": true,
   "terminated_reason": "goal_reached",
   "turn_limit": 10000,
+  "phase1_context": {
+    "exploration_episodes": 3,
+    "discovered_cells": 1236,
+    "discovered_walls": 1436,
+    "discovered_teleports": 0,
+    "discovered_route_length_cells": 378
+  },
+  "policy_context": {
+    "qtable_states_loaded": 668,
+    "phase2_epsilon": 0.0,
+    "rl_training_performed_in_run_py": false
+  },
   "positions": {
     "start": [
       0,
@@ -21,35 +33,91 @@
     ]
   },
   "raw_counts": {
-    "turns_taken": 98,
-    "total_actions_executed": 483,
-    "actions_planned": 490,
-    "deaths": 2,
+    "turns_taken": 303,
+    "total_actions_executed": 1485,
+    "total_steps_including_repeats_teleports_and_death_steps": 1485,
+    "movement_steps_executed_excluding_waits": 1231,
+    "actions_planned": 1515,
+    "deaths": 15,
+    "death_steps": 15,
     "wall_hits": 0,
-    "teleports_triggered": 2,
+    "teleports_triggered": 0,
+    "teleport_steps": 0,
     "confused_turns": 0,
-    "total_cells_visited_including_duplicates": 484,
-    "unique_cells_visited": 255,
-    "path_length_excluding_teleports": 483
+    "wait_actions_planned": 257,
+    "wait_actions_executed": 254,
+    "goal_steps": 1,
+    "turns_with_wait_actions": 52,
+    "turns_with_teleport": 0,
+    "turns_with_wall_hit": 0,
+    "total_cells_visited_including_duplicates": 1486,
+    "unique_cells_visited": 379,
+    "path_length_excluding_teleports": 1485
+  },
+  "action_breakdown": {
+    "planned_action_counts": {
+      "MOVE_UP": 202,
+      "MOVE_DOWN": 449,
+      "MOVE_LEFT": 330,
+      "MOVE_RIGHT": 277,
+      "WAIT": 257
+    },
+    "executed_action_counts": {
+      "MOVE_UP": 195,
+      "MOVE_DOWN": 440,
+      "MOVE_LEFT": 321,
+      "MOVE_RIGHT": 275,
+      "WAIT": 254
+    },
+    "effective_action_counts_after_confusion": {
+      "MOVE_UP": 195,
+      "MOVE_DOWN": 440,
+      "MOVE_LEFT": 321,
+      "MOVE_RIGHT": 275,
+      "WAIT": 254
+    },
+    "unique_planned_action_types_used": [
+      "MOVE_UP",
+      "MOVE_DOWN",
+      "MOVE_LEFT",
+      "MOVE_RIGHT",
+      "WAIT"
+    ],
+    "unique_executed_action_types_used": [
+      "MOVE_UP",
+      "MOVE_DOWN",
+      "MOVE_LEFT",
+      "MOVE_RIGHT",
+      "WAIT"
+    ]
+  },
+  "policy_breakdown": {
+    "meta_action_counts": {
+      "FOLLOW_PATH": 252,
+      "WAIT": 51
+    }
   },
   "route_summary": {
-    "discovered_route_length_cells": 254,
-    "route_progress_index": 250,
-    "route_completion_ratio": 0.984251968503937,
-    "discovered_cells_from_phase_1": 565,
-    "discovered_walls_from_phase_1": 652,
-    "discovered_teleports_from_phase_1": 1
+    "discovered_route_length_cells": 378,
+    "route_progress_index": 375,
+    "route_completion_ratio": 0.9920634920634921,
+    "discovered_cells_from_phase_1": 1236,
+    "discovered_walls_from_phase_1": 1436,
+    "discovered_teleports_from_phase_1": 0
   },
   "derived_metrics": {
     "success_rate": 1.0,
-    "avg_turns": 98.0,
-    "avg_deaths": 2.0,
-    "avg_path_length": 483.0,
-    "death_rate": 0.02040816326530612,
-    "exploration_efficiency": 0.5268595041322314
+    "avg_turns": 303.0,
+    "avg_deaths": 15.0,
+    "avg_path_length": 1485.0,
+    "death_rate": 0.04950495049504951,
+    "exploration_efficiency": 0.2550471063257066,
+    "avg_actions_per_turn": 4.900990099009901
   },
   "notes": [
     "This report is generated from the phase 2 endgame execution only.",
+    "total_actions_executed and total_steps_including_repeats_teleports_and_death_steps count every executed primitive action, including WAIT.",
+    "movement_steps_executed_excluding_waits counts only executed movement steps and excludes WAIT actions.",
     "Teleport jumps are excluded from path_length_excluding_teleports.",
     "Five-episode instructor averages are not computed here; this file records the single phase 2 run."
   ]
